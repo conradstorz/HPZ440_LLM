@@ -1,0 +1,40 @@
+# Local operator configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.pfx
+secrets/
+
+# Model weights and ML artifacts
+models/*
+!models/.gitkeep
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.bin
+*.onnx
+*.ckpt
+tokenizer.json
+tokenizer.model
+special_tokens_map.json
+
+# Runtime data
+data/
+open-webui/
+benchmarks/
+logs/
+*.log
+
+# Local caches
+.cache/
+.pytest_cache/
+__pycache__/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/settings.json
