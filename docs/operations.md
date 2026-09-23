@@ -1,5 +1,29 @@
 # Operations
 
+## Host Setup
+
+Before anything else, follow `docs/host-setup.md` once on the HPZ440: GPU install, NVIDIA driver, NVIDIA Container Toolkit, and host directories.
+
+## GPU Check
+
+Run `pwsh -NoProfile -File scripts/check-gpu.ps1` to confirm the GPU is visible to containers on the remote host. It runs `nvidia-smi` inside a throwaway CUDA container and points to `docs/host-setup.md` on failure.
+
+## Fetch a Model
+
+Run `pwsh -NoProfile -File scripts/fetch-model.ps1` to download the default Qwen2.5-7B-Instruct Q4_K_M GGUF into `HOST_MODEL_DIR` on the host. Use `-Repo` and `-File` for a different single-file GGUF. See `docs/models.md`.
+
+Then run `pwsh -NoProfile -File scripts/switch-model.ps1 -ModelPath /models/<file>.gguf` to point `.env` at it.
+
+## WebUI Secret
+
+`scripts/start.ps1` refuses to start while `WEBUI_SECRET_KEY` in `.env` is missing or still `change-me-before-use`. Set it to a random string once; Open WebUI uses it to sign sessions. One way to generate a value in PowerShell:
+
+```powershell
+[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+```
+
+`scripts/stop.ps1` never checks the secret, so a stack can always be stopped.
+
 ## Start
 
 Run `pwsh -NoProfile -File scripts/check-context.ps1 -Context hpz440` before starting.
@@ -9,6 +33,16 @@ Run `pwsh -NoProfile -File scripts/start.ps1` to start the stack.
 ## Stop
 
 Run `pwsh -NoProfile -File scripts/stop.ps1`.
+
+## Workstation Access
+
+`scripts/health.ps1` and `scripts/benchmark.ps1` call `http://localhost:<port>`, which assumes the HPZ440's published ports are forwarded to the workstation. Open a tunnel in a second terminal and leave it running:
+
+```powershell
+ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 gte@hpz440
+```
+
+Adjust the ports if `.env` changes `LLM_HOST_PORT` or `WEBUI_HOST_PORT`. LAN clients reach the services directly at the HPZ440 hostname or IP instead.
 
 ## Health
 
@@ -24,7 +58,7 @@ Restart the stack after switching models.
 
 Run `pwsh -NoProfile -File scripts/benchmark.ps1` after the API is healthy.
 
-Benchmark JSON is written under `benchmarks/`, which is ignored by git.
+Benchmark JSON is written under `benchmarks/`, which is ignored by git. It includes `generated_tokens_per_second` and `prompt_tokens_per_second` from llama.cpp's `timings` block; record the generated figure in the Measured table in `docs/models.md`.
 
 ## Exposure
 

@@ -10,12 +10,15 @@ Operations project for serving 7B-class GGUF models from the HPZ440 LAN server w
 
 ## Quickstart
 
-1. Put a 7B GGUF model on the HPZ440 under `/srv/llm/models`.
-2. Copy `.env.example` to `.env`.
-3. Set `LLM_MODEL_PATH=/models/<model>.gguf` in `.env`.
-4. Run `pwsh -NoProfile -File scripts/check-context.ps1 -Context hpz440`.
-5. Run `pwsh -NoProfile -File scripts/start.ps1`.
-6. Run `pwsh -NoProfile -File scripts/health.ps1`.
+1. On the HPZ440, follow `docs/host-setup.md` once (GPU, driver, NVIDIA Container Toolkit, host directories).
+2. Run `pwsh -NoProfile -File scripts/check-context.ps1 -Context hpz440`.
+3. Run `pwsh -NoProfile -File scripts/check-gpu.ps1`.
+4. Copy `.env.example` to `.env` and set `WEBUI_SECRET_KEY` to a random value.
+5. Run `pwsh -NoProfile -File scripts/fetch-model.ps1` to download the default model to the host.
+6. Run `pwsh -NoProfile -File scripts/switch-model.ps1 -ModelPath /models/Qwen2.5-7B-Instruct-Q4_K_M.gguf`.
+7. Run `pwsh -NoProfile -File scripts/start.ps1`.
+8. Run `pwsh -NoProfile -File scripts/health.ps1`.
+9. Run `pwsh -NoProfile -File scripts/benchmark.ps1` and record the result in `docs/models.md`.
 
 ## Default URLs
 
@@ -23,6 +26,8 @@ Operations project for serving 7B-class GGUF models from the HPZ440 LAN server w
 - Open WebUI: `http://localhost:3000`
 
 For LAN clients, replace `localhost` with the HPZ440 hostname or LAN IP.
+
+From this workstation, the scripts expect an SSH tunnel; see the Workstation Access section in docs/operations.md.
 
 ## Roadmap
 

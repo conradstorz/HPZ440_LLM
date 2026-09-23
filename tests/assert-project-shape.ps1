@@ -37,6 +37,20 @@ Assert-FileContains 'docs/operations.md' 'scripts/switch-model\.ps1'
 Assert-FileContains 'docs/operations.md' 'scripts/benchmark\.ps1'
 Assert-FileContains 'docs/operations.md' 'Public internet exposure is out of scope'
 
+Assert-FileContains '.env.example' '^HOST_JARVIS_DATA_DIR=/srv/llm/jarvis-data$'
+Assert-FileContains '.gitignore' '^jarvis-data/$'
+
+Assert-FileContains 'docs/host-setup.md' 'nvidia-container-toolkit'
+Assert-FileContains 'docs/host-setup.md' 'nvidia-ctk runtime configure'
+
+Assert-FileContains 'docs/models.md' 'Qwen2\.5-7B-Instruct'
+Assert-FileContains 'docs/models.md' 'Measured'
+Assert-FileContains 'docs/operations.md' 'scripts/check-gpu\.ps1'
+Assert-FileContains 'docs/operations.md' 'scripts/fetch-model\.ps1'
+Assert-FileContains 'docs/operations.md' 'WEBUI_SECRET_KEY'
+Assert-FileContains 'README.md' 'scripts/fetch-model\.ps1'
+Assert-FileContains 'README.md' 'docs/host-setup\.md'
+
 $Gitkeep = Join-Path $Root 'models/.gitkeep'
 if (-not (Test-Path $Gitkeep)) { throw 'Missing models/.gitkeep placeholder' }
 

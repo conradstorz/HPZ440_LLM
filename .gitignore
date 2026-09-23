@@ -25,6 +25,7 @@ special_tokens_map.json
 # Runtime data
 data/
 open-webui/
+jarvis-data/
 benchmarks/
 logs/
 *.log
