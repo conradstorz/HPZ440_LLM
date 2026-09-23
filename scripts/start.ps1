@@ -13,10 +13,10 @@ $ContextMatch = Select-String -Path $EnvPath -Pattern '^DOCKER_CONTEXT=(.+)$'
 $Context = if ($ContextMatch) { $ContextMatch.Matches.Groups[1].Value } else { 'hpz440' }
 if ([string]::IsNullOrWhiteSpace($Context)) { $Context = 'hpz440' }
 
-$SecretMatch = Select-String -Path $EnvPath -Pattern '^WEBUI_SECRET_KEY=(.*)$'
+$SecretMatch = Select-String -Path $EnvPath -CaseSensitive -Pattern '^WEBUI_SECRET_KEY=(.*)$'
 $Secret = if ($SecretMatch) { $SecretMatch.Matches.Groups[1].Value } else { '' }
 if ([string]::IsNullOrWhiteSpace($Secret) -or $Secret -eq 'change-me-before-use') {
-    throw "WEBUI_SECRET_KEY in .env is missing or still the default 'change-me-before-use'. Set a random value, for example: [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))"
+    throw "WEBUI_SECRET_KEY in .env is missing or still the default 'change-me-before-use'. Set a random value, for example: [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))"
 }
 
 $CheckContextScript = Join-Path $Root 'scripts/check-context.ps1'

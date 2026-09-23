@@ -19,7 +19,7 @@ Then run `pwsh -NoProfile -File scripts/switch-model.ps1 -ModelPath /models/<fil
 `scripts/start.ps1` refuses to start while `WEBUI_SECRET_KEY` in `.env` is missing or still `change-me-before-use`. Set it to a random string once; Open WebUI uses it to sign sessions. One way to generate a value in PowerShell:
 
 ```powershell
-[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
 ```
 
 `scripts/stop.ps1` never checks the secret, so a stack can always be stopped.

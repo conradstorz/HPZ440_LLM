@@ -17,7 +17,7 @@ Do not commit model files. The repository ignores `*.gguf`, `*.safetensors`, che
 
 `pwsh -NoProfile -File scripts/fetch-model.ps1` downloads one GGUF from Hugging Face straight into `HOST_MODEL_DIR` on the host, using a one-shot container. The default is `bartowski/Qwen2.5-7B-Instruct-GGUF` / `Qwen2.5-7B-Instruct-Q4_K_M.gguf`. Override with `-Repo` and `-File`.
 
-Prefer single-file GGUF builds. Qwen's official `Qwen/Qwen2.5-7B-Instruct-GGUF` repository splits `q4_k_m` into two files (`-00001-of-00002.gguf`), which llama.cpp can load but which the scripts and `LLM_MODEL_PATH` do not handle. Gated repositories (Llama, Gemma) need an authenticated `hf` CLI on the host and a manual copy into `HOST_MODEL_DIR`.
+Prefer single-file GGUF builds. `fetch-model.ps1` downloads one named file per invocation. llama.cpp itself loads split GGUFs (for example Qwen's official `Qwen/Qwen2.5-7B-Instruct-GGUF`, where `q4_k_m` ships as `-00001-of-00002.gguf` and `-00002-of-00002.gguf`): run `fetch-model.ps1` once per shard with the same `-Repo`, then point `switch-model.ps1` at the first shard; llama.cpp finds the companions in the same directory. Gated repositories (Llama, Gemma) need an authenticated `hf` CLI on the host and a manual copy into `HOST_MODEL_DIR`.
 
 ## Measured
 

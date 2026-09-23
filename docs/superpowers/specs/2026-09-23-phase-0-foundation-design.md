@@ -73,7 +73,7 @@ If `timings` is absent from the response (a different backend, or a future llama
 
 - `.env.example` adds `HOST_JARVIS_DATA_DIR=/srv/llm/jarvis-data` under a comment noting it is reserved for Phase 1. `compose.yaml` is not changed: a bind mount needs a consuming service, and that service arrives in Phase 1.
 - `.gitignore` adds `jarvis-data/` under "Runtime data".
-- `start.ps1` reads `WEBUI_SECRET_KEY` with `Select-String` and throws if it is missing or equals `change-me-before-use`. The error tells the operator to set a random value and gives one way to generate it in PowerShell (`[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))`, or equivalent).
+- `start.ps1` reads `WEBUI_SECRET_KEY` with a case-sensitive `Select-String` (compose interpolation is case-sensitive, so a lower-case key would be ignored) and throws if it is missing or equals `change-me-before-use`. The error tells the operator to set a random value and gives one way to generate it in PowerShell (`[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))`, a cryptographic source, since Open WebUI signs sessions with it).
 - `stop.ps1` is unchanged; stopping a stack with a weak secret must always work.
 
 ### 6. Documentation
