@@ -26,5 +26,7 @@ Assert-FileContains 'scripts/switch-model.ps1' 'param\(.*\$ModelPath'
 Assert-FileContains 'scripts/switch-model.ps1' 'LLM_MODEL_PATH='
 Assert-FileContains 'scripts/benchmark.ps1' '/v1/chat/completions'
 Assert-FileContains 'scripts/benchmark.ps1' 'benchmarks'
+Assert-FileContains 'scripts/start.ps1' 'WEBUI_SECRET_KEY'
+Assert-FileContains 'scripts/start.ps1' 'change-me-before-use'
 
 Write-Host 'Script contract checks passed.'

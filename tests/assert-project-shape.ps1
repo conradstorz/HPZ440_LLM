@@ -37,6 +37,9 @@ Assert-FileContains 'docs/operations.md' 'scripts/switch-model\.ps1'
 Assert-FileContains 'docs/operations.md' 'scripts/benchmark\.ps1'
 Assert-FileContains 'docs/operations.md' 'Public internet exposure is out of scope'
 
+Assert-FileContains '.env.example' '^HOST_JARVIS_DATA_DIR=/srv/llm/jarvis-data$'
+Assert-FileContains '.gitignore' '^jarvis-data/$'
+
 $Gitkeep = Join-Path $Root 'models/.gitkeep'
 if (-not (Test-Path $Gitkeep)) { throw 'Missing models/.gitkeep placeholder' }
 
