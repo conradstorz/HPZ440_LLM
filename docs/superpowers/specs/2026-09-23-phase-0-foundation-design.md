@@ -27,7 +27,7 @@ Sections, in order:
 2. NVIDIA driver: `sudo ubuntu-drivers install`, reboot, `nvidia-smi` shows the RTX 3060.
 3. NVIDIA Container Toolkit: add NVIDIA's apt repository, `sudo apt install nvidia-container-toolkit`, `sudo nvidia-ctk runtime configure --runtime=docker`, `sudo systemctl restart docker`.
 4. Verify from the workstation with `scripts/check-gpu.ps1` (deliverable 2).
-5. Create `HOST_MODEL_DIR` and `HOST_JARVIS_DATA_DIR` on the host (`sudo mkdir -p /srv/llm/models /srv/llm/jarvis-data`, owned by the SSH user) so bind mounts and the fetch script have writable targets.
+5. Create `HOST_MODEL_DIR` and `HOST_JARVIS_DATA_DIR` on the host (`sudo mkdir -p /srv/llm/models /srv/llm/jarvis-data`, owned by the SSH user) so the operator can manage model files without sudo; containers run as root and write regardless.
 
 The doc states the NVIDIA apt repository setup commands verbatim from NVIDIA's installation guide for Ubuntu and names the guide URL so the operator can check for changes.
 
@@ -46,7 +46,7 @@ Downloads one GGUF file from Hugging Face directly into `HOST_MODEL_DIR` on the 
 
 - Parameters: `-Repo` (default `bartowski/Qwen2.5-7B-Instruct-GGUF`), `-File` (default `Qwen2.5-7B-Instruct-Q4_K_M.gguf`), `-Context` (same resolution as `check-gpu.ps1`).
 - Reads `HOST_MODEL_DIR` from `.env` with `Select-String` (default `/srv/llm/models`). Requires `.env` to exist, with the same error message style as the other scripts.
-- Runs a one-shot container: `docker --context <ctx> run --rm -v <HOST_MODEL_DIR>:/models python:3.12-slim sh -c "pip install --quiet huggingface_hub && hf download <Repo> <File> --local-dir /models"`.
+- Runs a one-shot container: `docker --context <ctx> run --rm -v <HOST_MODEL_DIR>:/models python:3.12-slim sh -c "pip install --quiet 'huggingface_hub>=0.34,<2' && hf download <Repo> <File> --local-dir /models"`.
 - If the target file already exists in the mount, the container command skips the download and says so. Implement by checking `test -f /models/<File>` inside the same `sh -c` before installing anything.
 - On success prints the exact follow-up command: `pwsh -NoProfile -File scripts/switch-model.ps1 -ModelPath /models/<File>`.
 - Gated repositories (Llama, Gemma) are out of scope: the doc says to download them manually with an authenticated `hf` CLI on the host and copy into `HOST_MODEL_DIR`.

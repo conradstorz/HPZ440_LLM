@@ -59,7 +59,7 @@ Expected: `nvidia-smi` output from inside a container, then `GPU check passed on
 
 ## 5. Host directories
 
-Create the directories that `compose.yaml` and the scripts bind-mount, owned by the SSH user so `scripts/fetch-model.ps1` can write there:
+Create the directories that `compose.yaml` and the scripts bind-mount, and give them to the SSH user so you can manage model files without `sudo`. Containers run as root, so `scripts/fetch-model.ps1` writes fine either way, and files it downloads land root-owned; if you ran it before this step, the `chown -R` below reclaims them.
 
 ```bash
 sudo mkdir -p /srv/llm/models /srv/llm/jarvis-data

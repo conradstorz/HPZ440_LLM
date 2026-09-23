@@ -27,6 +27,8 @@ Operations project for serving 7B-class GGUF models from the HPZ440 LAN server w
 
 For LAN clients, replace `localhost` with the HPZ440 hostname or LAN IP.
 
+From this workstation, the scripts expect an SSH tunnel; see the Workstation Access section in docs/operations.md.
+
 ## Roadmap
 
 This stack is the inference layer of the Jarvis home assistant. See `docs/roadmap.md` for the phased plan and `docs/JARVIS_Home_Assistant_Reference.md` for the target design.

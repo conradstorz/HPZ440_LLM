@@ -22,7 +22,7 @@ $HostModelDir = '/srv/llm/models'
 $DirMatch = Select-String -Path $EnvPath -Pattern '^HOST_MODEL_DIR=(.+)$'
 if ($DirMatch) { $HostModelDir = $DirMatch.Matches.Groups[1].Value }
 
-$ContainerScript = "if [ -f /models/$File ]; then echo 'Already present: /models/$File'; exit 0; fi; pip install --quiet huggingface_hub && hf download $Repo $File --local-dir /models"
+$ContainerScript = "if [ -f /models/$File ]; then echo 'Already present: /models/$File'; exit 0; fi; pip install --quiet 'huggingface_hub>=0.34,<2' && hf download $Repo $File --local-dir /models"
 
 Write-Host "Downloading $Repo/$File into $HostModelDir on context '$Context'..."
 docker --context $Context run --rm -v "${HostModelDir}:/models" python:3.12-slim sh -c $ContainerScript
