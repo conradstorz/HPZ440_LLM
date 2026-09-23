@@ -40,6 +40,9 @@ Assert-FileContains 'docs/operations.md' 'Public internet exposure is out of sco
 Assert-FileContains '.env.example' '^HOST_JARVIS_DATA_DIR=/srv/llm/jarvis-data$'
 Assert-FileContains '.gitignore' '^jarvis-data/$'
 
+Assert-FileContains 'docs/host-setup.md' 'nvidia-container-toolkit'
+Assert-FileContains 'docs/host-setup.md' 'nvidia-ctk runtime configure'
+
 $Gitkeep = Join-Path $Root 'models/.gitkeep'
 if (-not (Test-Path $Gitkeep)) { throw 'Missing models/.gitkeep placeholder' }
 

@@ -29,4 +29,8 @@ Assert-FileContains 'scripts/benchmark.ps1' 'benchmarks'
 Assert-FileContains 'scripts/start.ps1' 'WEBUI_SECRET_KEY'
 Assert-FileContains 'scripts/start.ps1' 'change-me-before-use'
 
+Assert-FileContains 'scripts/check-gpu.ps1' '--gpus all'
+Assert-FileContains 'scripts/check-gpu.ps1' 'nvidia-smi'
+Assert-FileContains 'scripts/check-gpu.ps1' 'docs/host-setup\.md'
+
 Write-Host 'Script contract checks passed.'
