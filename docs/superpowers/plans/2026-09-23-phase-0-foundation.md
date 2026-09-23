@@ -6,7 +6,7 @@
 
 **Architecture:** Everything stays operations-only: PowerShell scripts on the Windows workstation drive the remote Docker context `hpz440`, Markdown docs describe manual host steps, and two literal-content PowerShell test scripts assert that files contain what the docs promise. New scripts follow the existing `.env` `Select-String` single-key pattern.
 
-**Tech Stack:** PowerShell 7 (`pwsh`), Docker CLI with remote context `hpz440`, `nvidia/cuda:12.4.1-base-ubuntu24.04` (GPU check), `python:3.12-slim` + `huggingface_hub` (model download), llama.cpp server `timings` response fields.
+**Tech Stack:** PowerShell 7 (`pwsh`), Docker CLI with remote context `hpz440`, `nvidia/cuda:12.4.1-base-ubuntu22.04` (GPU check), `python:3.12-slim` + `huggingface_hub` (model download), llama.cpp server `timings` response fields.
 
 **Spec:** `docs/superpowers/specs/2026-09-23-phase-0-foundation-design.md`
 
@@ -239,7 +239,7 @@ if ([string]::IsNullOrWhiteSpace($Context) -and (Test-Path $EnvPath)) {
 }
 if ([string]::IsNullOrWhiteSpace($Context)) { $Context = 'hpz440' }
 
-$Image = 'nvidia/cuda:12.4.1-base-ubuntu24.04'
+$Image = 'nvidia/cuda:12.4.1-base-ubuntu22.04'
 Write-Host "Running nvidia-smi in $Image on context '$Context'..."
 docker --context $Context run --rm --gpus all $Image nvidia-smi
 if ($LASTEXITCODE -ne 0) {

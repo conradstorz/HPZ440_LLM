@@ -36,7 +36,7 @@ The doc states the NVIDIA apt repository setup commands verbatim from NVIDIA's i
 Operator preflight that proves the GPU is visible to containers on the remote host.
 
 - Parameters: `-Context` (default: `DOCKER_CONTEXT` from `.env` if present, else `hpz440`), following the `Select-String` single-key convention used by `start.ps1`.
-- Runs `docker --context <ctx> run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu24.04 nvidia-smi`.
+- Runs `docker --context <ctx> run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`.
 - Prints the `nvidia-smi` output on success. On failure, throws a message that names the two usual causes: NVIDIA Container Toolkit not installed or Docker not restarted after `nvidia-ctk runtime configure`, and points to `docs/host-setup.md`.
 - `start.ps1` does not call it. It is a documented preflight, like `check-context.ps1`.
 
