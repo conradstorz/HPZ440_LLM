@@ -38,4 +38,8 @@ Assert-FileContains 'scripts/fetch-model.ps1' 'huggingface_hub'
 Assert-FileContains 'scripts/fetch-model.ps1' 'param\(.*\$Repo'
 Assert-FileContains 'scripts/fetch-model.ps1' 'switch-model\.ps1'
 
+Assert-FileContains 'scripts/benchmark.ps1' 'predicted_per_second'
+Assert-FileContains 'scripts/benchmark.ps1' 'generated_tokens_per_second'
+Assert-FileContains 'scripts/benchmark.ps1' 'LLM_MODEL_PATH'
+
 Write-Host 'Script contract checks passed.'
