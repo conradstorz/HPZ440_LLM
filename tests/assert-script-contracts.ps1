@@ -33,4 +33,9 @@ Assert-FileContains 'scripts/check-gpu.ps1' '--gpus all'
 Assert-FileContains 'scripts/check-gpu.ps1' 'nvidia-smi'
 Assert-FileContains 'scripts/check-gpu.ps1' 'docs/host-setup\.md'
 
+Assert-FileContains 'scripts/fetch-model.ps1' 'HOST_MODEL_DIR'
+Assert-FileContains 'scripts/fetch-model.ps1' 'huggingface_hub'
+Assert-FileContains 'scripts/fetch-model.ps1' 'param\(.*\$Repo'
+Assert-FileContains 'scripts/fetch-model.ps1' 'switch-model\.ps1'
+
 Write-Host 'Script contract checks passed.'
