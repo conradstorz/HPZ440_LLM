@@ -35,7 +35,7 @@ This document records agreed behavior and an initial architecture. It is not a c
 | NAS archive | Originals, attachments, research captures, event journal, and protected backups. |
 | User interface | Inbox briefing, evidence, proposed actions, approvals, and rule management. |
 
-Potential starting tools include Ollama for local inference, Open WebUI for a prototype interface, and LiteLLM for cloud routing. These are candidates, not committed choices. Jarvis-specific permission and journal logic still needs an application layer.
+Potential starting tools include Ollama for local inference, Open WebUI for a prototype interface, and LiteLLM for cloud routing. These were candidates when this document was written; `roadmap.md` records the committed choices, including `llama.cpp` rather than Ollama for local inference. Jarvis-specific permission and journal logic still needs an application layer.
 
 ## First milestone: read-only daily inbox briefing
 
@@ -89,6 +89,8 @@ An append-only application log alone does not guarantee immutability against an 
 5. Add the cloud gateway and disclosure audit, then approve narrow recurring email rules individually.
 
 ## Decisions still open
+
+Several of these are now resolved in `roadmap.md` (mailbox: Gmail; GPU: RTX 3060 12GB, pending install; inference: `llama.cpp`; application stack: Python; archive: HPZ440 disk first, then NAS). The list below is kept as originally written.
 
 - Which mailbox or mailboxes Jarvis will triage, and whether the briefing runs on a schedule, on demand, or both.
 - GPU and local model choice; acceptable latency and power budget.

@@ -62,7 +62,7 @@ Decisions this phase resolves: model file and quantization; acceptable latency f
 
 ## Phase 1: Observe (read-only inbox briefing)
 
-Goal: Jarvis reads new Gmail, archives it, classifies it, searches prior records, and presents a briefing. It takes no outbound action. This is the Jarvis document's first milestone and permission stage 1.
+Goal: Jarvis reads new Gmail, stores a local archive copy under `/data/archive/` (the Gmail mailbox itself is never modified; messages stay in the inbox), classifies it, searches prior records, and presents a briefing. It takes no outbound action. This is the Jarvis document's first milestone and permission stage 1.
 
 Architecture added to `compose.yaml`:
 
@@ -78,7 +78,7 @@ Internal units, each independently testable:
 | `classify` | Given a captured message plus retrieved evidence, ask `llm-api` for sender, topic, requested action, deadline, priority, and one of four groups: Needs your decision, Reply suggested, For your information, Likely noise. Output is structured JSON validated in code. | `llm-api`, `retrieval` |
 | `retrieval` | SQLite full-text index over archived mail and documents, rebuildable from `/data/archive/`. Returns source-linked evidence. | filesystem |
 | `briefing` | Renders the grouped briefing with evidence separated from inference, a suggested reply where relevant, and a one-click correction control that writes to `journal`. | `classify`, `retrieval`, `journal` |
-| `policy` | The permission gate. In Phase 1 it allows only read, archive, classify, search, suggest. Any outbound tool call is rejected in code, not by prompt. | none |
+| `policy` | The permission gate. In Phase 1 it allows only read, copy to the local archive, classify, search, suggest. Any outbound tool call is rejected in code, not by prompt. | none |
 
 Rules enforced in code, not in prompts:
 
@@ -101,7 +101,7 @@ Decisions this phase resolves: schedule vs on-demand (start on-demand, add a per
 
 ## Phase 2: Propose (drafts and proposed actions)
 
-Goal: permission stage 2. Jarvis prepares reply drafts and proposed actions (archive, label, unsubscribe) for review. Still nothing leaves the network or the inbox.
+Goal: permission stage 2. Jarvis prepares reply drafts and proposed actions (Gmail archive, label, unsubscribe) for review. Still nothing leaves the network or the inbox.
 
 In scope:
 
