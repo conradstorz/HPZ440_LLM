@@ -13,7 +13,7 @@ if ([string]::IsNullOrWhiteSpace($Context) -and (Test-Path $EnvPath)) {
 }
 if ([string]::IsNullOrWhiteSpace($Context)) { $Context = 'hpz440' }
 
-$Image = 'nvidia/cuda:12.4.1-base-ubuntu24.04'
+$Image = 'nvidia/cuda:12.4.1-base-ubuntu22.04'
 Write-Host "Running nvidia-smi in $Image on context '$Context'..."
 docker --context $Context run --rm --gpus all $Image nvidia-smi
 if ($LASTEXITCODE -ne 0) {
