@@ -10,6 +10,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 $EnvPath = Join-Path $Root '.env'
 if (-not (Test-Path $EnvPath)) { throw 'Missing .env. Copy .env.example to .env first.' }
 if ($File -notmatch '^[A-Za-z0-9._-]+\.gguf$') { throw 'File must be a bare GGUF filename such as Qwen2.5-7B-Instruct-Q4_K_M.gguf (no directories).' }
+if ($Repo -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') { throw 'Repo must be a Hugging Face repo id such as bartowski/Qwen2.5-7B-Instruct-GGUF.' }
 
 if ([string]::IsNullOrWhiteSpace($Context)) {
     $ContextMatch = Select-String -Path $EnvPath -Pattern '^DOCKER_CONTEXT=(.+)$'
