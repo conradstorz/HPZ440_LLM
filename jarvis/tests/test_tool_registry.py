@@ -53,4 +53,21 @@ def test_handler_error_and_policy_violation_become_error_strings(reg):
     assert reg.run(ToolCall(id="2", name="forbidden", arguments={"text": "x"})).startswith("error: PolicyViolation")
     assert reg.run(ToolCall(id="3", name="echo", arguments={"wrong": 1})).startswith("error: TypeError")
     ev = [e for e in reg.journal.iter_all() if e.kind == "tool_call"]
-    assert [e.payload["ok"] for e in ev] == [False, False, False]
+    assert [e.payload["ok"] for e in ev] == [False, False]  # the blocked tool never became a tool_call
+    rejects = [e for e in reg.journal.iter_all() if e.kind == "policy_reject"]
+    assert [(e.payload["key"], e.payload["value"]) for e in rejects] == [("forbidden", "send")]
+
+
+def test_context_reaches_only_tools_that_want_it(reg):
+    seen = {}
+
+    def needs(text: str, _context: dict | None = None) -> str:
+        seen["ctx"] = _context
+        return text
+
+    reg.register(Tool(name="needs", description="d", action="read", handler=needs, wants_context=True,
+                      parameters={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}))
+    assert reg.run(ToolCall(id="1", name="needs", arguments={"text": "x"}), context={"explicit_allowed": True}) == "x"
+    assert seen["ctx"] == {"explicit_allowed": True}
+    # echo does not declare wants_context, so passing a context must not add an unexpected kwarg
+    assert reg.run(ToolCall(id="2", name="echo", arguments={"text": "y"}), context={"explicit_allowed": True}) == "y"

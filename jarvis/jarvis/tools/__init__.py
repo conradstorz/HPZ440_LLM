@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from jarvis.core.llm import ToolCall
 from jarvis.journal import Journal, JournalEvent
-from jarvis.policy import Policy
+from jarvis.policy import Policy, PolicyViolation
 
 TRUNCATED = " [truncated]"
 
@@ -22,6 +22,9 @@ class Tool(BaseModel):
     action: str
     handler: Callable[..., str]
     result_chars: int = 4000
+    # Opt-in: the handler takes a `_context` keyword carrying facts the model must not be able to forge,
+    # such as whether the current user message authorises an explicit note.
+    wants_context: bool = False
 
 
 class ToolRegistry:
@@ -41,17 +44,27 @@ class ToolRegistry:
         return [{"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
                 for t in self._tools.values()]
 
-    def run(self, call: ToolCall, *, conversation_id: str | None = None) -> str:
+    def run(self, call: ToolCall, *, conversation_id: str | None = None, context: dict | None = None) -> str:
         tool = self._tools.get(call.name)
         if tool is None or "_raw" in call.arguments:
             problem = f"unknown tool '{call.name}'" if tool is None else "invalid tool arguments"
             self._journal.append(JournalEvent.new("policy_reject", payload={"key": call.name, "value": repr(call.arguments)[:500],
                                                                             "conversation_id": conversation_id}))
             return f"error: {problem}"
+        try:
+            # Outside the handler's try: a blocked action is a gate decision, not a tool failure, so it is
+            # journaled as policy_reject and never as a tool_call.
+            self._policy.check(tool.action)
+        except PolicyViolation as e:
+            self._journal.append(JournalEvent.new("policy_reject", payload={"key": tool.name, "value": tool.action,
+                                                                            "conversation_id": conversation_id}))
+            return f"error: PolicyViolation: {e}"
+        kwargs = dict(call.arguments)
+        if tool.wants_context:
+            kwargs["_context"] = context or {}
         ok, result = True, ""
         try:
-            self._policy.check(tool.action)
-            result = str(tool.handler(**call.arguments))
+            result = str(tool.handler(**kwargs))
         except Exception as e:  # noqa: BLE001 - the model sees the error text and can recover
             ok, result = False, f"error: {type(e).__name__}: {e}"
         if ok and len(result) > tool.result_chars:  # error strings are short and must stay whole so the model sees the type
