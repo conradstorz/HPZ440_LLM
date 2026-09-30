@@ -41,6 +41,12 @@ To revoke: remove the app at https://myaccount.google.com/permissions and delete
 - Message bodies are passed to the model as untrusted data; the system prompt says so, and the policy filter applies regardless.
 - Versions are written atomically and never overwritten.
 
+## Known limits
+
+- The briefing's forms carry no CSRF token. Accepted: the service is LAN-only, unauthenticated by design, and never takes an outbound action.
+- Message text is fenced as untrusted data in the prompt, but the fence itself is not escaped. A hostile message can at worst mis-group itself or produce a draft that is displayed and never sent.
+- The first run drains the whole poll before classifying anything. For a large inbox set `JARVIS_GMAIL_QUERY=in:inbox newer_than:1d` for the first pass.
+
 ## Tests
 
 ```powershell

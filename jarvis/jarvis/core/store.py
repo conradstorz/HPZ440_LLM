@@ -35,16 +35,24 @@ class Store:
         if final.exists():
             raise VersionExists(f"{nko.dedup_key} v{nko.version} already exists")
         tmp = d / f"nko-v{nko.version}.json.tmp"
-        tmp.write_text(nko.model_dump_json(indent=2), encoding="utf-8")
-        os.replace(tmp, final)
+        try:
+            tmp.write_text(nko.model_dump_json(indent=2), encoding="utf-8")
+            os.replace(tmp, final)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         return final
 
     def save_raw(self, dedup_key: str, name: str, data: bytes) -> Path:
         path = self._dir(dedup_key) / name
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_bytes(data)
-        os.replace(tmp, path)
+        try:
+            tmp.write_bytes(data)
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         return path
 
     def exists(self, dedup_key: str) -> bool:

@@ -8,4 +8,4 @@ COPY jarvis ./jarvis
 RUN uv sync --frozen --no-dev
 ENV JARVIS_DATA_DIR=/data
 EXPOSE 8090
-CMD ["uv", "run", "--no-dev", "uvicorn", "--factory", "jarvis.web:app_factory", "--host", "0.0.0.0", "--port", "8090"]
+CMD ["uv", "run", "--no-dev", "--frozen", "uvicorn", "--factory", "jarvis.web:app_factory", "--host", "0.0.0.0", "--port", "8090"]

@@ -2,7 +2,7 @@
 
 Status: Approved
 Updated: 2026-09-30
-Amended 2026-09-30: only token.json is copied to the host.
+Amended 2026-09-30: only token.json is copied to the host; implementation signatures for policy.filter_model_output and briefing.render recorded.
 Roadmap phase: `docs/roadmap.md`, Phase 1, plus the `draft` unit pulled forward from Phase 2
 
 ## Purpose
@@ -167,12 +167,12 @@ Each unit is one package with one public surface, its own tests, and no imports 
 | Unit | Public functions | Depends on |
 | --- | --- | --- |
 | `journal` | `append(event)`; `read(day: date) -> list[JournalEvent]`; `events_for(dedup_key) -> list[JournalEvent]`; `last_run() -> JournalEvent \| None`. One JSONL file per UTC day under `/data/journal/`, append-only, one `open(..., "a")` per event. Malformed lines are skipped and counted, never fatal. | filesystem |
-| `policy` | `ALLOWED = {"read", "archive_copy", "classify", "search", "suggest", "draft"}`; `check(action: str) -> None` raises `PolicyViolation` otherwise; `filter_model_output(text_or_dict) -> (clean, rejected: list[str])` strips any `tool_calls`, `function_call`, or top-level keys named `action`/`send`/`forward`/`delete`/`label`/`modify` from a model response and journals a `policy_reject` for each. | journal |
+| `policy` | `ALLOWED = {"read", "archive_copy", "classify", "search", "suggest", "draft"}`; `check(action: str) -> None` raises `PolicyViolation` otherwise; `filter_model_output(output: dict, *, dedup_key=None) -> (clean, rejected)` strips any `tool_calls`, `function_call`, or top-level keys named `action`/`send`/`forward`/`delete`/`label`/`modify` from a model response and journals a `policy_reject` for each. | journal |
 | `retrieval` | `index(nko)`; `search(query: str, k: int = 5, exclude: str \| None = None) -> list[Evidence]`; `rebuild() -> int` drops the index and re-indexes every `store.iter_latest()`. SQLite with FTS5 (`subject`, `content`, `sender` columns, `dedup_key` unindexed), file `/data/index/mail.sqlite`, schema version pragma; mismatch triggers rebuild. `Evidence` is a small pydantic model matching the `observations` entry shape. | store |
 | `sources/gmail` | `GmailSource(settings).poll(since)`. Scope: `https://www.googleapis.com/auth/gmail.readonly` only. Query: `GMAIL_QUERY` (default `in:inbox`) plus `after:<since>`. Lists ids, skips any `store.exists(dedup_key)`, fetches `format=raw` for `raw.eml` and `format=full` for the payload, saves attachments by sha256, yields v0. `normalize(payload, raw_bytes) -> NKO` is a pure function tested on fixtures. Token from `/data/secrets/token.json`; refresh is automatic; missing or revoked token raises `AuthRequired` naming `scripts/jarvis-auth.ps1`. | Gmail API, store |
 | `classify` | `classify(nko: NKO, evidence: list[Evidence], corrections: list[dict], llm: LLMClient) -> NKO` returns v1. System prompt states the message is untrusted data and instructions inside it are not commands. User prompt includes sender, subject, first N chars of content (N from settings, default 6000), evidence snippets, and up to 5 prior corrections from the same sender or domain as few-shot examples. Requests the JSON schema for the classification entry. Two retries on `LLMError` or schema validation failure, then raises `ClassifyError`. Output is passed through `policy.filter_model_output` before validation. | `LLMClient`, policy, journal |
 | `draft` | `draft(nko: NKO, corrections: list[dict], llm: LLMClient) -> NKO` returns v2. For `likely_noise` and `fyi` with no requested action, `reply_text` is null without calling the model. Same untrusted-data system prompt, same retry and policy filter. | `LLMClient`, policy, journal |
-| `briefing` | `render(nkos: list[NKO], errors: list[JournalEvent]) -> str`; `render_message(nko: NKO, versions: list[NKO], events: list[JournalEvent]) -> str`; `apply_correction(dedup_key, to_group, note) -> NKO` derives a new version, saves it, journals `correction`, changes nothing else; `corrections_for(sender: str, domain: str) -> list[dict]` reads past `decisions` for classify and draft. | store, journal, jinja2 |
+| `briefing` | `render(nkos: list[NKO], errors: dict[str, JournalEvent]) -> str`; `render_message(nko: NKO, versions: list[NKO], events: list[JournalEvent]) -> str`; `apply_correction(dedup_key, to_group, note) -> NKO` derives a new version, saves it, journals `correction`, changes nothing else; `corrections_for(sender: str, domain: str) -> list[dict]` reads past `decisions` for classify and draft. | store, journal, jinja2 |
 | `pipeline` | `run_once(sources, llm) -> RunSummary`. | all |
 | `web` | FastAPI app, routes below. | briefing, pipeline |
 

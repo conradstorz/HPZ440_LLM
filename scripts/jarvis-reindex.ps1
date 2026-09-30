@@ -11,7 +11,7 @@ $Context = if ($ContextMatch) { $ContextMatch.Matches.Groups[1].Value } else { '
 
 Push-Location $Root
 try {
-    docker --context $Context compose --env-file .env exec -T jarvis uv run --no-dev jarvis reindex
+    docker --context $Context compose --env-file .env exec -T jarvis uv run --no-dev --frozen jarvis reindex
     if ($LASTEXITCODE -ne 0) { throw 'Reindex failed. Is the stack running (scripts/start.ps1)?' }
 } finally {
     Pop-Location

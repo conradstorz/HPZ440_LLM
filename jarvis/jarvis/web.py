@@ -9,6 +9,7 @@ from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from jarvis.briefing import Briefing
+from jarvis.core.nko import effective_group
 from jarvis.core.run import RunSummary
 from jarvis.core.store import Store
 from jarvis.journal import Journal, JournalEvent
@@ -24,7 +25,7 @@ def create_app(*, store: Store, journal: Journal, briefing: Briefing, run: Calla
         nkos = list(store.iter_latest())
         errors = {}
         for n in nkos:
-            if not n.classifications:
+            if effective_group(n) is None:  # same bucketing Briefing.render uses
                 e = journal.last_error_for(n.dedup_key)
                 if e:
                     errors[n.dedup_key] = e
