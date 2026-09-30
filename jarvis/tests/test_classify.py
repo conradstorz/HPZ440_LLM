@@ -109,3 +109,9 @@ def test_schema_constrains_deadline_pattern():
     null_branch = next(b for b in deadline_schema["anyOf"] if b.get("type") == "null")
     assert string_branch["pattern"] == r"^\d{4}-\d{2}-\d{2}$"
     assert null_branch == {"type": "null"}
+
+
+def test_notes_text_appears_in_prompt(deps):
+    llm = FakeLLM([GOOD])
+    classify(make_nko(), [], [], llm, notes_text="Notes from Conrad:\n1. Acme invoices are mine.", **deps)
+    assert "Acme invoices are mine." in llm.calls[0]["user"]

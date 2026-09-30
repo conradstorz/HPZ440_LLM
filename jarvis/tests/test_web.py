@@ -7,6 +7,7 @@ from jarvis.briefing import Briefing
 from jarvis.core.nko import NKOStatus, effective_group
 from jarvis.core.run import RunSummary
 from jarvis.journal import Journal
+from jarvis.notes import Notes
 from jarvis.web import create_app
 from tests.conftest import classified, make_nko
 
@@ -29,9 +30,11 @@ def client(data_dir, store):
         from datetime import UTC, datetime
         return RunSummary(since=datetime(2025, 9, 1, tzinfo=UTC), captured=0)
 
-    app = create_app(store=store, journal=journal, briefing=Briefing(store, journal), run=run, llm_reachable=lambda: True)
+    notes = Notes(data_dir, journal)
+    app = create_app(store=store, journal=journal, briefing=Briefing(store, journal), run=run, llm_reachable=lambda: True,
+                     notes=notes, respond=lambda m, cid: iter(["pong"]))
     c = TestClient(app)
-    c.gate, c.calls, c.store = gate, calls, store
+    c.gate, c.calls, c.store, c.notes = gate, calls, store, notes
     return c
 
 
@@ -90,3 +93,22 @@ def test_run_failure_is_journaled_and_surfaced(data_dir, store):
     assert "no token" in r.json()["detail"]
     errors = [e for e in journal.iter_all() if e.kind == "error"]
     assert len(errors) == 1 and errors[0].payload["stage"] == "run"
+
+
+def test_notes_page_and_retire(client):
+    n = client.notes.propose("Always be brief.", "all", "explicit")
+    r = client.get("/notes")
+    assert r.status_code == 200 and "Always be brief." in r.text and n.id in r.text and "Retire" in r.text
+    r = client.post("/notes/retire", data={"note_id": n.id, "reason": "no"}, follow_redirects=False)
+    assert r.status_code == 303 and client.notes.get(n.id).status == "retired"
+    assert client.post("/notes/retire", data={"note_id": "zzzz", "reason": "no"}).status_code == 404
+
+
+def test_openai_routes_mounted(client):
+    assert client.get("/v1/models").json()["data"][0]["id"] == "jarvis"
+    r = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "ping"}]})
+    assert r.json()["choices"][0]["message"]["content"] == "pong"
+
+
+def test_nav_links(client):
+    assert 'href="/notes"' in client.get("/").text

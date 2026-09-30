@@ -7,6 +7,7 @@ from jarvis.core.config import Settings
 from jarvis.core.llm import FakeLLM, LLMError
 from jarvis.core.nko import NKOStatus, effective_group, utcnow
 from jarvis.journal import Journal, JournalEvent
+from jarvis.notes import Notes
 from jarvis.pipeline import MAX_ATTEMPTS, PollError, run_once
 from jarvis.policy import Policy
 from jarvis.retrieval import Index
@@ -24,7 +25,7 @@ DRF = {"reply_text": "ok", "proposed_action": "none", "rationale": "r"}
 def _deps(data_dir, store):
     j = Journal(data_dir)
     return dict(store=store, journal=j, index=Index(data_dir, store), policy=Policy(j), briefing=Briefing(store, j),
-                settings=Settings(data_dir=data_dir))
+                notes=Notes(data_dir, j), settings=Settings(data_dir=data_dir))
 
 
 def test_end_to_end_three_messages(data_dir, store):
@@ -193,3 +194,12 @@ def test_a_poll_failure_does_not_advance_the_watermark(data_dir, store):
     second_run_ts = deps["journal"].last_run().ts
     s3 = run_once(sources=[FakeSource([])], llm=FakeLLM([]), **deps)
     assert s3.since == second_run_ts - timedelta(hours=1)
+
+
+def test_pipeline_injects_active_notes(data_dir, store):
+    deps = _deps(data_dir, store)
+    deps["notes"].propose("Newsletters are noise.", "classify", "explicit")
+    deps["notes"].propose("pending thing", "classify", "proposed")
+    llm = FakeLLM([CLS, DRF])
+    run_once(sources=[FakeSource([make_nko("gmail:a:0", received_at=NOW)])], llm=llm, **deps)
+    assert "Newsletters are noise." in llm.calls[0]["user"] and "pending thing" not in llm.calls[0]["user"]

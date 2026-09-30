@@ -62,7 +62,7 @@ class DraftError(Exception):
     pass
 
 
-def build_prompt(nko: NKO, corrections: list[dict], content_chars: int) -> str:
+def build_prompt(nko: NKO, corrections: list[dict], content_chars: int, notes_text: str = "") -> str:
     c = nko.classifications[0] if nko.classifications else {}
     parts = [
         f"From: {sender_address(nko)}",
@@ -77,6 +77,8 @@ def build_prompt(nko: NKO, corrections: list[dict], content_chars: int) -> str:
     if corrections:
         parts += ["", "Past corrections by the recipient for this sender or domain:"]
         parts += [f"- '{c.get('subject')}' moved from {c.get('from_group')} to {c.get('to_group')}" for c in corrections]
+    if notes_text:
+        parts += ["", notes_text]
     parts += ["", "Return the JSON draft."]
     return "\n".join(parts)
 
@@ -86,14 +88,14 @@ def _no_reply(nko: NKO) -> DraftEntry:
 
 
 def draft(nko: NKO, corrections: list[dict], llm: LLMClient, *, policy: Policy, journal: Journal,
-          content_chars: int = 6000) -> NKO:
+          content_chars: int = 6000, notes_text: str = "") -> NKO:
     policy.check("draft")
     c = nko.classifications[0] if nko.classifications else {}
     if effective_group(nko) in NO_REPLY_GROUPS and not c.get("requested_action"):
         entry = _no_reply(nko)
         model = "rule"
     else:
-        prompt = build_prompt(nko, corrections, content_chars)
+        prompt = build_prompt(nko, corrections, content_chars, notes_text)
         last: Exception | None = None
         for _ in range(RETRIES):
             try:
