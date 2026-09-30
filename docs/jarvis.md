@@ -57,6 +57,23 @@ uv run pytest
 
 No network, no GPU, no Gmail. The Gmail source is tested against recorded API payloads in `jarvis/tests/fixtures/`.
 
+## First live run
+
+Date: 2026-09-30. Inbox: `conradstorz@gmail.com`, query `in:inbox newer_than:1d`, cap 20 messages per run, six runs.
+
+| Measure | Value |
+| --- | --- |
+| Messages captured, classified, drafted | 120 / 120 / 120 |
+| Groups (latest classification) | needs_decision 22, reply_suggested 3, fyi 62, likely_noise 33 |
+| Drafts with reply text / proposed actions | 17 / none 97, label 15, archive 8 |
+| Capture to draft, first attempt | median 2.6 s, p90 4.0 s, max 5.5 s (target: under 10 s) |
+| `policy_reject` events | 0 |
+| `LLM_CONTEXT_SIZE` | 8192 (raised from 4096 after two prompts returned HTTP 400) |
+
+Problems found and fixed during the run, in order: Google's per-minute quota cut the first pass off before any message was persisted (now each message is saved as it arrives, runs are capped, and rate-limit responses back off); `start.ps1` did not rebuild the image (now `up -d --build`); the model wrote free text into `deadline` (schema now constrains it to an ISO date and the validator coerces anything else to null); the `reasoning` string could run to the token limit and truncate the JSON (all schema strings now carry `maxLength`); llama.cpp's 400 body was not journaled (it is now). After those fixes the final pass processed 20 messages with zero errors.
+
+Classification quality has not yet been judged: no corrections have been submitted. Review the briefing and correct a few cards; the correction rate over the coming weeks is the Phase 2 quality gate.
+
 ## Not in this phase
 
 Sending or modifying mail, cloud models, scheduled polling, calendar or document sources, the GTE workspace agent, auth on the briefing, NAS storage. See `roadmap.md`.

@@ -62,7 +62,7 @@ Decisions this phase resolves: model file and quantization; acceptable latency f
 
 ## Phase 1: Observe (read-only inbox briefing)
 
-Phase 1 status: implemented 2026-09-30 per `docs/superpowers/specs/2026-09-30-jarvis-phase-1-observe-design.md`. The `draft` unit from Phase 2 was pulled forward because it is local and read-only. The data model is GTE's Normalized Knowledge Object (immutable, versioned) rather than the separate per-unit records sketched below; the unit table stands as the map of responsibilities. First live run: recorded under a `## First live run` heading in `docs/jarvis.md` once done.
+Phase 1 status: implemented 2026-09-30 per `docs/superpowers/specs/2026-09-30-jarvis-phase-1-observe-design.md`. The `draft` unit from Phase 2 was pulled forward because it is local and read-only. The data model is GTE's Normalized Knowledge Object (immutable, versioned) rather than the separate per-unit records sketched below; the unit table stands as the map of responsibilities. First live run 2026-09-30: 120 messages, all four groups populated, 2.6 s median per message; details under `## First live run` in `docs/jarvis.md`. Context size decision resolved: 8192.
 
 Goal: Jarvis reads new Gmail, stores a local archive copy under `/data/archive/` (the Gmail mailbox itself is never modified; messages stay in the inbox), classifies it, searches prior records, and presents a briefing. It takes no outbound action. This is the Jarvis document's first milestone and permission stage 1.
 
