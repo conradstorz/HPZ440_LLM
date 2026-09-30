@@ -90,7 +90,7 @@ An append-only application log alone does not guarantee immutability against an 
 
 ## Decisions still open
 
-Several of these are now resolved in `roadmap.md` (mailbox: Gmail; GPU: RTX 3060 12GB, pending install; inference: `llama.cpp`; application stack: Python; archive: HPZ440 disk first, then NAS). The list below is kept as originally written.
+Several of these are now resolved in `roadmap.md` (mailbox: Gmail; GPU: RTX 3060 12GB, installed 2026-09-29; inference: `llama.cpp`; application stack: Python; archive: HPZ440 disk first, then NAS). The list below is kept as originally written.
 
 - Which mailbox or mailboxes Jarvis will triage, and whether the briefing runs on a schedule, on demand, or both.
 - GPU and local model choice; acceptable latency and power budget.
