@@ -51,8 +51,6 @@ def test_unknown_tool_and_raw_arguments_are_policy_rejects(reg):
 def test_handler_error_and_policy_violation_become_error_strings(reg):
     assert reg.run(ToolCall(id="1", name="boom", arguments={})) == "error: RuntimeError: kaput"
     assert reg.run(ToolCall(id="2", name="forbidden", arguments={"text": "x"})).startswith("error: PolicyViolation")
-    # echo's result_chars=10 truncates the full "error: TypeError: ..." message; this asserts the
-    # truncated-but-still-diagnostic text rather than the untruncated exception string.
     assert reg.run(ToolCall(id="3", name="echo", arguments={"wrong": 1})).startswith("error: TypeError")
     ev = [e for e in reg.journal.iter_all() if e.kind == "tool_call"]
     assert [e.payload["ok"] for e in ev] == [False, False, False]
