@@ -52,6 +52,15 @@ def test_render_for_prompt(notes):
     assert text.startswith("Notes from Conrad:") and "1. Always be brief." in text and "pending one" not in text
 
 
+def test_render_for_prompt_is_capped(notes):
+    for i in range(30):
+        notes.propose(f"{i} " + "x" * 480, "chat", "explicit")
+    assert len(notes.render_for_prompt("chat", max_chars=10**9)) > 4000  # the raw block really is oversized
+    capped = notes.render_for_prompt("chat", max_chars=1000)
+    assert len(capped) == 1000 and capped.endswith("(older notes omitted)")
+    assert len(notes.render_for_prompt("chat")) == 4000  # the default cap protects the context budget
+
+
 def test_text_is_truncated_and_expire_pending(notes):
     n = notes.propose("x" * 600, "chat", "explicit")
     assert len(n.text) == 500

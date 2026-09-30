@@ -16,6 +16,7 @@ AppliesTo = Literal["classify", "draft", "chat", "all"]
 Status = Literal["pending", "active", "retired"]
 Source = Literal["explicit", "proposed"]
 MAX_TEXT = 500
+RENDER_TRUNCATED = "\n... (older notes omitted)"
 
 
 class Note(BaseModel):
@@ -99,8 +100,11 @@ class Notes:
                 expired += 1
         return expired
 
-    def render_for_prompt(self, applies_to: str) -> str:
+    def render_for_prompt(self, applies_to: str, max_chars: int = 4000) -> str:
         notes = self.active(applies_to)
         if not notes:
             return ""
-        return "Notes from Conrad:\n" + "\n".join(f"{i}. {n.text}" for i, n in enumerate(notes, 1))
+        block = "Notes from Conrad:\n" + "\n".join(f"{i}. {n.text}" for i, n in enumerate(notes, 1))
+        if len(block) > max_chars:  # an unbounded note set must not crowd the transcript out of the context
+            block = block[: max(0, max_chars - len(RENDER_TRUNCATED))] + RENDER_TRUNCATED
+        return block
