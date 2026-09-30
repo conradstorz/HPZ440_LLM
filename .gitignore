@@ -21,6 +21,7 @@ models/*
 tokenizer.json
 tokenizer.model
 special_tokens_map.json
+!jarvis/tests/fixtures/*.bin
 
 # Runtime data
 data/
