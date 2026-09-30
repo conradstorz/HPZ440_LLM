@@ -130,3 +130,15 @@ def test_unreadable_token_is_auth_required(tmp_path: Path):
     token.write_text("{not json", encoding="utf-8")
     with pytest.raises(AuthRequired):
         GoogleGmailAPI(token)
+
+
+def test_consent_flow_rejects_empty_and_invalid_credentials(tmp_path: Path):
+    from jarvis.sources.gmail import run_consent_flow
+
+    empty = tmp_path / "credentials.json"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="is empty"):
+        run_consent_flow(empty, tmp_path / "token.json")
+    empty.write_text("\ufeff{not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="not valid JSON"):
+        run_consent_flow(empty, tmp_path / "token.json")

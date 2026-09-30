@@ -8,6 +8,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 $EnvPath = Join-Path $Root '.env'
 if (-not (Test-Path $EnvPath)) { throw 'Missing .env. Copy .env.example to .env first.' }
 if (-not (Test-Path $CredentialsPath)) { throw "credentials.json not found at $CredentialsPath. See docs/jarvis.md for creating the OAuth client." }
+if ((Get-Item $CredentialsPath).Length -eq 0) { throw "credentials.json at $CredentialsPath is empty. Download the OAuth client JSON from Google Cloud Console and save it there." }
 
 $ContextMatch = Select-String -Path $EnvPath -Pattern '^DOCKER_CONTEXT=(.+)$'
 $Context = if ($ContextMatch) { $ContextMatch.Matches.Groups[1].Value } else { 'hpz440' }

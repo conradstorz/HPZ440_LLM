@@ -83,7 +83,15 @@ def run_consent_flow(credentials_path: Path, token_path: Path) -> str:
     """One-time OAuth consent on a machine with a browser. Writes token.json. Returns granted scopes."""
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
+    # utf-8-sig tolerates a BOM from Notepad; a clear error beats a JSONDecodeError at char 0.
+    text = Path(credentials_path).read_text(encoding="utf-8-sig")
+    if not text.strip():
+        raise ValueError(f"{credentials_path} is empty. Download the OAuth client JSON from Google Cloud Console and save it there.")
+    try:
+        client_config = json.loads(text)
+    except ValueError as e:
+        raise ValueError(f"{credentials_path} is not valid JSON ({e}). Download the OAuth client JSON from Google Cloud Console.") from e
+    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
     creds = flow.run_local_server(port=0)
     Path(token_path).write_text(creds.to_json(), encoding="utf-8")
     return " ".join(creds.scopes or SCOPES)
