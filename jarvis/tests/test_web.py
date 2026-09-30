@@ -72,3 +72,18 @@ def test_run_conflict_while_running(client):
     client.gate.set()
     t.join()
     assert client.get("/health").json()["last_run"] is None  # run() here is a stub that writes no journal event
+
+
+def test_run_failure_is_journaled_and_surfaced(data_dir, store):
+    journal = Journal(data_dir)
+
+    def run():
+        raise RuntimeError("no token")
+
+    app = create_app(store=store, journal=journal, briefing=Briefing(store, journal), run=run,
+                     llm_reachable=lambda: True)
+    r = TestClient(app).post("/run", follow_redirects=False)
+    assert r.status_code == 500
+    assert "no token" in r.json()["detail"]
+    errors = [e for e in journal.iter_all() if e.kind == "error"]
+    assert len(errors) == 1 and errors[0].payload["stage"] == "run"

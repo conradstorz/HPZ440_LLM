@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from jarvis.briefing import Briefing
 from jarvis.core.run import RunSummary
 from jarvis.core.store import Store
-from jarvis.journal import Journal
+from jarvis.journal import Journal, JournalEvent
 
 
 def create_app(*, store: Store, journal: Journal, briefing: Briefing, run: Callable[[], RunSummary],
@@ -46,6 +46,10 @@ def create_app(*, store: Store, journal: Journal, briefing: Briefing, run: Calla
             raise HTTPException(409, "a run is already in progress")
         try:
             run()
+        except Exception as e:  # noqa: BLE001 - the operator needs the reason, not a bare 500
+            detail = f"{type(e).__name__}: {e}"
+            journal.append(JournalEvent.new("error", payload={"stage": "run", "message": detail[:1000]}))
+            raise HTTPException(500, detail) from e
         finally:
             run_lock.release()
         return RedirectResponse("/", status_code=303)
