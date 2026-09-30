@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from jarvis.briefing import Briefing
 from jarvis.core.config import Settings
 from jarvis.core.llm import FakeLLM
+from jarvis.core.nko import utcnow
 from jarvis.core.store import Store
 from jarvis.journal import Journal
 from jarvis.pipeline import run_once
@@ -17,6 +18,8 @@ from tests.conftest import make_nko
 
 CLS = {"group": "reply_suggested", "topic": "t", "requested_action": "reply", "deadline": None, "priority": "normal", "reasoning": "r"}
 DRF = {"reply_text": "ok", "proposed_action": "none", "rationale": "r"}
+# FakeSource filters on ``since``, so the fixtures must be inside the default lookback window.
+NOW = utcnow()
 
 
 def test_post_run_drives_the_real_pipeline_from_a_worker_thread(data_dir):
@@ -27,7 +30,8 @@ def test_post_run_drives_the_real_pipeline_from_a_worker_thread(data_dir):
     briefing = Briefing(store, journal)
     settings = Settings(data_dir=data_dir)
     keys = ["gmail:a:1", "gmail:a:2"]
-    source = FakeSource([make_nko(keys[0], subject="First subject"), make_nko(keys[1], subject="Second subject")])
+    source = FakeSource([make_nko(keys[0], subject="First subject", received_at=NOW),
+                         make_nko(keys[1], subject="Second subject", received_at=NOW)])
     llm = FakeLLM([CLS, DRF, CLS, DRF])
 
     def run():

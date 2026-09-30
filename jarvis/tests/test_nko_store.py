@@ -1,5 +1,6 @@
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -53,7 +54,20 @@ def test_store_round_trip(store: Store):
 
 def test_store_refuses_overwrite(store: Store):
     v0 = make_nko()
+    path = store.save_version(v0)
+    with pytest.raises(VersionExists):
+        store.save_version(v0)
+    # the refused write left the published file alone and cleaned up after itself
+    d = path.parent
+    assert [p.name for p in sorted(d.iterdir())] == ["nko-v0.json"]
+    assert list(d.glob("*.tmp")) == []
+
+
+def test_store_refuses_overwrite_even_without_the_early_check(store: Store, monkeypatch):
+    """The publish step itself must refuse to clobber, not just the exists() probe that races with it."""
+    v0 = make_nko()
     store.save_version(v0)
+    monkeypatch.setattr(Path, "exists", lambda self: False)
     with pytest.raises(VersionExists):
         store.save_version(v0)
 
@@ -61,7 +75,7 @@ def test_store_refuses_overwrite(store: Store):
 def test_store_crash_leaves_no_partial(store: Store, monkeypatch):
     def boom(src, dst):
         raise OSError("disk full")
-    monkeypatch.setattr(os, "replace", boom)
+    monkeypatch.setattr(os, "link", boom)
     with pytest.raises(OSError):
         store.save_version(make_nko())
     assert not store.exists("gmail:conradstorz@gmail.com:m1")

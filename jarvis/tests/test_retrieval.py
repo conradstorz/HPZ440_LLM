@@ -46,6 +46,16 @@ def test_rebuild_from_store_gives_identical_results(data_dir, store):
     assert [(e.dedup_key, e.snippet) for e in idx.search("statement invoice")] == before
 
 
+def test_a_corrupt_index_file_is_discarded_and_rebuilt(data_dir, store):
+    """A corrupt file makes the PRAGMA probe raise; that must not block startup."""
+    _three(store)
+    path = data_dir / "index" / "mail.sqlite"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"not a database")
+    idx = Index(data_dir, store)
+    assert idx.count() == store.count() == 3
+
+
 def test_schema_mismatch_triggers_rebuild(data_dir, store):
     _three(store)
     idx = Index(data_dir, store)

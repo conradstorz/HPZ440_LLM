@@ -186,6 +186,20 @@ def test_execute_gives_up_after_the_whole_schedule(monkeypatch):
     assert delays == [2, 4, 8, 16, 32, 60] and req.attempts == 7
 
 
+def test_execute_retries_a_429_with_no_reason_in_the_body(monkeypatch):
+    """A 429 from a proxy carries no Google reason; it is still a rate limit and must back off."""
+    import httplib2
+    from googleapiclient.errors import HttpError
+
+    delays: list[float] = []
+    monkeypatch.setattr("jarvis.sources.gmail._sleep", delays.append)
+    bare = HttpError(httplib2.Response({"status": 429}), b"<html>429 Too Many Requests</html>",
+                     uri="https://gmail.example/messages")
+    req = FlakyRequest([bare], {"ok": 1})
+    assert GoogleGmailAPI._execute(req) == {"ok": 1}
+    assert delays == [2] and req.attempts == 2
+
+
 def test_execute_does_not_retry_a_403_for_another_reason(monkeypatch):
     from googleapiclient.errors import HttpError
 

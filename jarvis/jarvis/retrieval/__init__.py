@@ -21,8 +21,18 @@ class Index:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # The web app builds Index on the main thread and calls it from request worker threads. Safe because
         # /run is serialised by web.py's run_lock and no other route touches the index.
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
-        if self._conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+        try:
+            self._conn = sqlite3.connect(self.path, check_same_thread=False)
+            stale = self._conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION
+        except sqlite3.DatabaseError:
+            # The index is disposable, so a corrupt or truncated file is discarded rather than blocking startup.
+            conn = getattr(self, "_conn", None)
+            if conn is not None:
+                conn.close()
+            self.path.unlink(missing_ok=True)
+            self._conn = sqlite3.connect(self.path, check_same_thread=False)
+            stale = True
+        if stale:
             self.rebuild()
 
     def _create(self) -> None:

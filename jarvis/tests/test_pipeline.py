@@ -5,7 +5,7 @@ import pytest
 from jarvis.briefing import Briefing
 from jarvis.core.config import Settings
 from jarvis.core.llm import FakeLLM, LLMError
-from jarvis.core.nko import NKOStatus, effective_group
+from jarvis.core.nko import NKOStatus, effective_group, utcnow
 from jarvis.journal import Journal, JournalEvent
 from jarvis.pipeline import MAX_ATTEMPTS, PollError, run_once
 from jarvis.policy import Policy
@@ -13,6 +13,9 @@ from jarvis.retrieval import Index
 from jarvis.sources.base import FakeSource
 from jarvis.sources.gmail import AuthRequired
 from tests.conftest import make_nko
+
+# FakeSource now filters on ``since``; every polled fixture must be inside the default lookback window.
+NOW = utcnow()
 
 CLS = {"group": "reply_suggested", "topic": "t", "requested_action": "reply", "deadline": None, "priority": "normal", "reasoning": "r"}
 DRF = {"reply_text": "ok", "proposed_action": "none", "rationale": "r"}
@@ -26,7 +29,7 @@ def _deps(data_dir, store):
 
 def test_end_to_end_three_messages(data_dir, store):
     deps = _deps(data_dir, store)
-    src = FakeSource([make_nko(f"gmail:a:{i}", subject=f"S{i}") for i in range(3)])
+    src = FakeSource([make_nko(f"gmail:a:{i}", subject=f"S{i}", received_at=NOW) for i in range(3)])
     llm = FakeLLM([CLS, DRF, CLS, DRF, CLS, DRF])
     s = run_once(sources=[src], llm=llm, **deps)
     assert (s.captured, s.classified, s.drafted, s.errors) == (3, 3, 3, 0)
@@ -42,7 +45,7 @@ def test_end_to_end_three_messages(data_dir, store):
 
 def test_one_failure_does_not_stop_the_run_and_is_retried(data_dir, store):
     deps = _deps(data_dir, store)
-    src = FakeSource([make_nko(f"gmail:a:{i}") for i in range(3)])
+    src = FakeSource([make_nko(f"gmail:a:{i}", received_at=NOW) for i in range(3)])
     llm = FakeLLM([CLS, DRF, LLMError("x"), LLMError("y"), LLMError("z"), CLS, DRF])
     s = run_once(sources=[src], llm=llm, **deps)
     assert (s.captured, s.classified, s.drafted, s.errors) == (3, 2, 2, 1)
@@ -68,24 +71,34 @@ def test_since_defaults_then_uses_last_run(data_dir, store):
 
 def test_corrections_reach_the_prompt(data_dir, store):
     deps = _deps(data_dir, store)
-    run_once(sources=[FakeSource([make_nko("gmail:a:0", subject="Earlier")])], llm=FakeLLM([CLS, DRF]), **deps)
+    run_once(sources=[FakeSource([make_nko("gmail:a:0", subject="Earlier", received_at=NOW)])], llm=FakeLLM([CLS, DRF]), **deps)
     deps["briefing"].apply_correction("gmail:a:0", "needs_decision", "always ask me")
     llm = FakeLLM([CLS, DRF])
-    run_once(sources=[FakeSource([make_nko("gmail:a:1", subject="Later")])], llm=llm, **deps)
+    run_once(sources=[FakeSource([make_nko("gmail:a:1", subject="Later", received_at=NOW)])], llm=llm, **deps)
     assert "always ask me" in llm.calls[0]["user"]
 
 
 def test_error_stage_is_capture_when_indexing_fails(data_dir, store, monkeypatch):
     deps = _deps(data_dir, store)
     monkeypatch.setattr(deps["index"], "index", lambda nko: (_ for _ in ()).throw(RuntimeError("disk")))
-    s = run_once(sources=[FakeSource([make_nko("gmail:a:0")])], llm=FakeLLM([]), **deps)
+    s = run_once(sources=[FakeSource([make_nko("gmail:a:0", received_at=NOW)])], llm=FakeLLM([]), **deps)
     assert s.errors == 1
     assert deps["journal"].last_error_for("gmail:a:0").payload["stage"] == "capture"
 
 
+def test_a_message_archived_but_never_indexed_is_indexed_on_resume(data_dir, store):
+    """If index() failed after save_version, the capture block is skipped forever; the resume path must re-index."""
+    deps = _deps(data_dir, store)  # Index built against an empty store, so its rebuild() indexes nothing
+    store.save_version(make_nko("gmail:a:0", received_at=NOW))
+    assert deps["index"].count() == 0
+    s = run_once(sources=[FakeSource([])], llm=FakeLLM([CLS, DRF]), **deps)
+    assert (s.captured, s.classified, s.drafted, s.errors) == (0, 1, 1, 0)
+    assert deps["index"].count() == 1
+
+
 def test_pending_is_deduplicated_within_one_run(data_dir, store):
     deps = _deps(data_dir, store)
-    n = make_nko("gmail:a:0")
+    n = make_nko("gmail:a:0", received_at=NOW)
     # first run: classify fails three times -> v0 only
     run_once(sources=[FakeSource([n])], llm=FakeLLM([LLMError("a"), LLMError("b"), LLMError("c")]), **deps)
     # second run: FakeSource re-yields the same v0; it must be processed once, not twice
@@ -97,7 +110,7 @@ def test_pending_is_deduplicated_within_one_run(data_dir, store):
 
 def test_a_message_that_failed_five_times_is_skipped(data_dir, store):
     deps = _deps(data_dir, store)
-    n = make_nko("gmail:a:0")
+    n = make_nko("gmail:a:0", received_at=NOW)
     store.save_version(n)
     for _ in range(MAX_ATTEMPTS):
         deps["journal"].append(JournalEvent.new("error", nko_id=n.id, dedup_key=n.dedup_key, version=0,
@@ -155,7 +168,7 @@ def test_auth_required_on_the_first_poll_still_writes_a_run_event(data_dir, stor
 def test_a_run_stops_at_the_cap_and_the_rest_wait_for_the_next_run(data_dir, store):
     deps = _deps(data_dir, store)
     deps["settings"] = Settings(data_dir=data_dir, max_messages_per_run=2)
-    src = FakeSource([make_nko(f"gmail:a:{i}", subject=f"S{i}") for i in range(3)])
+    src = FakeSource([make_nko(f"gmail:a:{i}", subject=f"S{i}", received_at=NOW) for i in range(3)])
     s = run_once(sources=[src], llm=FakeLLM([CLS, DRF, CLS, DRF]), **deps)
     assert (s.captured, s.classified, s.drafted) == (2, 2, 2) and s.capped is True
     assert not store.exists("gmail:a:2")
@@ -164,3 +177,19 @@ def test_a_run_stops_at_the_cap_and_the_rest_wait_for_the_next_run(data_dir, sto
     s2 = run_once(sources=[src], llm=FakeLLM([CLS, DRF]), **deps)
     assert (s2.captured, s2.classified, s2.drafted) == (1, 1, 1) and s2.capped is False
     assert store.get_latest("gmail:a:2").version == 2
+    # a capped run does not advance the watermark, or the backlog it left behind would fall out of the window
+    assert s2.since == s.since
+
+
+def test_a_poll_failure_does_not_advance_the_watermark(data_dir, store):
+    deps = _deps(data_dir, store)
+    with pytest.raises(PollError):
+        run_once(sources=[ExplodingSource([], RuntimeError("quota"))], llm=FakeLLM([]), **deps)
+    first = deps["journal"].last_run()
+    assert first.payload["poll_failed"] is True
+    s2 = run_once(sources=[FakeSource([])], llm=FakeLLM([]), **deps)
+    assert s2.since == datetime.fromisoformat(first.payload["since"])
+    # the clean run that follows does advance it
+    second_run_ts = deps["journal"].last_run().ts
+    s3 = run_once(sources=[FakeSource([])], llm=FakeLLM([]), **deps)
+    assert s3.since == second_run_ts - timedelta(hours=1)

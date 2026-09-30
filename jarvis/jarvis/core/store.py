@@ -6,6 +6,7 @@ import os
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from uuid import uuid4
 
 from jarvis.core.nko import NKO
 
@@ -34,13 +35,17 @@ class Store:
         final = d / f"nko-v{nko.version}.json"
         if final.exists():
             raise VersionExists(f"{nko.dedup_key} v{nko.version} already exists")
-        tmp = d / f"nko-v{nko.version}.json.tmp"
+        # A unique temp name keeps two concurrent writers from publishing each other's half-written bytes.
+        tmp = d / f"nko-v{nko.version}.json.{os.getpid()}-{uuid4().hex[:8]}.tmp"
         try:
             tmp.write_text(nko.model_dump_json(indent=2), encoding="utf-8")
-            os.replace(tmp, final)
-        except BaseException:
+            # os.link is the publish step because it refuses to clobber: os.replace would silently overwrite a
+            # version another writer published between the exists() check above and here.
+            os.link(tmp, final)
+        except FileExistsError as e:
+            raise VersionExists(f"{nko.dedup_key} v{nko.version} already exists") from e
+        finally:
             tmp.unlink(missing_ok=True)
-            raise
         return final
 
     def save_raw(self, dedup_key: str, name: str, data: bytes) -> Path:

@@ -32,13 +32,19 @@ def _process(nko: NKO, *, llm: LLMClient, store: Store, journal: Journal, index:
              corrections_cache: dict[tuple[str, str], list[dict]]) -> None:
     """Advance one message from whatever version it has to v2. Raises on the first failing stage."""
     stage[0] = "capture"
+    newly_captured = False
     if not store.exists(nko.dedup_key):
         store.save_version(nko)
         journal.append(JournalEvent.new("capture", nko_id=nko.id, dedup_key=nko.dedup_key, version=0,
                                         payload={"subject": nko.subject, "attachments": len(nko.attachments)}))
         index.index(nko)
+        newly_captured = True
         summary.captured += 1
     current = store.get_latest(nko.dedup_key)
+    if not newly_captured:
+        # An earlier run may have died between save_version and index(); nothing would ever index this message
+        # again, because the capture block is skipped from now on. index() is idempotent, so just redo it.
+        index.index(current)
     stage[0] = "classify"
     cache_key = (sender_address(current), sender_domain(current))
     if cache_key not in corrections_cache:
@@ -57,13 +63,33 @@ def _process(nko: NKO, *, llm: LLMClient, store: Store, journal: Journal, index:
         summary.drafted += 1
 
 
+def _next_since(last: JournalEvent | None, now: datetime, settings: Settings) -> datetime:
+    """The poll window start for this run.
+
+    A run that hit the per-run cap or died mid-poll did not finish listing its window, so the watermark must not
+    advance: GmailSource turns ``since`` into ``after:YYYY/MM/DD``, and advancing it would strand the backlog the
+    capped run deliberately left behind.
+    """
+    if last is None:
+        return now - timedelta(days=settings.initial_lookback_days)
+    if last.payload.get("capped") is True or last.payload.get("poll_failed") is True:
+        previous = last.payload.get("since")
+        if isinstance(previous, datetime):
+            return previous
+        if isinstance(previous, str):
+            try:
+                return datetime.fromisoformat(previous)
+            except ValueError:
+                pass  # an unreadable watermark is no reason to refuse the run; fall back to the overlap window
+    return last.ts - OVERLAP
+
+
 def run_once(*, sources: list[Source], llm: LLMClient, store: Store, journal: Journal, index: Index, policy: Policy,
              briefing: Briefing, settings: Settings, now: datetime | None = None) -> RunSummary:
     policy.check("read")
     now = now or utcnow()
-    last = journal.last_run()
-    since = (last.ts - OVERLAP) if last else (now - timedelta(days=settings.initial_lookback_days))
-    summary = RunSummary(since=since)
+    summary = RunSummary(since=_next_since(journal.last_run(), now, settings))
+    since = summary.since
     seen: set[str] = set()
     pending: list[NKO] = []
     for nko in [n for n in store.iter_latest() if not n.recommendations]:
@@ -110,6 +136,7 @@ def run_once(*, sources: list[Source], llm: LLMClient, store: Store, journal: Jo
             except Exception as e:  # noqa: BLE001 - the source itself failed; stop polling but keep what we have
                 failure, failed_source = e, source.name
                 summary.errors += 1
+                summary.poll_failed = True
                 journal.append(JournalEvent.new("error", payload={"stage": "poll", "source": source.name,
                                                                   "message": f"{type(e).__name__}: {e}"[:1000]}))
                 break

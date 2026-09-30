@@ -28,6 +28,23 @@ def test_llama_client_raises_llm_error_on_bad_json():
         c.complete_json("s", "u", {})
 
 
+def test_llama_client_raises_llm_error_on_null_content():
+    """A 200 with content: null must be an LLMError, not a TypeError escaping the client."""
+    def handler(req):
+        return httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
+    c = LlamaCppClient("http://llm", "m", transport=_transport(handler))
+    with pytest.raises(LLMError):
+        c.complete_json("s", "u", {})
+
+
+def test_llama_client_raises_llm_error_on_a_non_mapping_choice():
+    def handler(req):
+        return httpx.Response(200, json={"choices": ["nonsense"]})
+    c = LlamaCppClient("http://llm", "m", transport=_transport(handler))
+    with pytest.raises(LLMError):
+        c.complete_json("s", "u", {})
+
+
 def test_llama_client_raises_on_http_error():
     c = LlamaCppClient("http://llm", "m", transport=_transport(lambda r: httpx.Response(500)))
     with pytest.raises(LLMError):

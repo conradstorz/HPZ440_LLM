@@ -63,10 +63,13 @@ def _error_reasons(e: Any) -> set[str]:
 
 
 def _is_retryable(e: Any) -> bool:
+    """429 and 5xx are always transient, whatever the body says — a proxy or a load balancer may send no reason
+    at all. 403 is the ambiguous one: Google uses it both for quota and for a permanently missing scope, so it is
+    retried only when a rate-limit reason is present."""
     status = int(getattr(getattr(e, "resp", None), "status", 0) or 0)
-    if 500 <= status < 600:
+    if status == 429 or 500 <= status < 600:
         return True
-    return status in (403, 429) and bool(_error_reasons(e) & RETRYABLE_REASONS)
+    return status == 403 and bool(_error_reasons(e) & RETRYABLE_REASONS)
 
 
 class GmailAPI(Protocol):
@@ -104,7 +107,8 @@ class GoogleGmailAPI:
 
     @staticmethod
     def _execute(request: Any) -> Any:
-        """Run one Google API request, backing off on rate limits and 5xx. Any other error is raised at once."""
+        """Run one Google API request, backing off on every 429 and 5xx (and on a rate-limited 403). Any other
+        error is raised at once."""
         from googleapiclient.errors import HttpError
 
         for delay in BACKOFF_SECONDS:

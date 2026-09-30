@@ -22,4 +22,5 @@ class FakeSource:
         self._nkos = list(nkos)
 
     def poll(self, since: datetime) -> Iterator[NKO]:
-        yield from self._nkos
+        # Honours ``since`` like a real source so watermark behaviour is testable.
+        yield from (n for n in self._nkos if n.received_at >= since)

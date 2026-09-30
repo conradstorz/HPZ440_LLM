@@ -45,8 +45,10 @@ class LlamaCppClient:
                 raise LLMError("model output truncated at max_tokens")
             content = choice["message"]["content"]
             out = json.loads(content)
-        except (KeyError, IndexError, ValueError) as e:
-            raise LLMError(str(e)) from e
+        # TypeError/AttributeError cover a 200 whose shape is wrong rather than merely absent: a null content,
+        # a choice that is not a mapping. Every one becomes an LLMError so the caller's retry path applies.
+        except (KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
+            raise LLMError(f"{type(e).__name__}: {e}") from e
         if not isinstance(out, dict):
             raise LLMError("model returned non-object JSON")
         return out
