@@ -26,7 +26,7 @@ try {
 }
 
 Write-Host "Copying token.json to ${DataDir}/secrets on context '$Context'..."
-Get-Content -Raw $TokenPath | docker --context $Context run --rm -i -v "${DataDir}:/data" alpine sh -c 'mkdir -p /data/secrets; cat > /data/secrets/token.json; chmod 600 /data/secrets/token.json'
+Get-Content -Raw $TokenPath | docker --context $Context run --rm -i -v "${DataDir}:/data" alpine sh -e -c 'mkdir -p /data/secrets; cat > /data/secrets/token.json.tmp; test -s /data/secrets/token.json.tmp; mv /data/secrets/token.json.tmp /data/secrets/token.json; chmod 600 /data/secrets/token.json'
 if ($LASTEXITCODE -ne 0) { throw 'Copy to the host failed.' }
 Remove-Item $TokenPath
 Write-Host 'Done. credentials.json stays on this workstation; only token.json (refresh token, read-only scope) is on the host.'
