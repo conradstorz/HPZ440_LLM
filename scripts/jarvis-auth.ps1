@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$CredentialsPath
+    [string]$CredentialsPath = (Join-Path $env:USERPROFILE '.jarvis\credentials.json')
 )
 
 $ErrorActionPreference = 'Stop'

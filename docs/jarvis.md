@@ -18,9 +18,9 @@ Jarvis reads new Gmail with a read-only credential, archives every message as an
 
 ## One-time Gmail setup
 
-1. In Google Cloud Console create a project (or reuse one), enable the **Gmail API**, and create an **OAuth client ID** of type **Desktop app**. Download it as `credentials.json`. Keep it on this workstation; it is gitignored and never copied to the host.
+1. In Google Cloud Console create a project (or reuse one), enable the **Gmail API**, and create an **OAuth client ID** of type **Desktop app**. Download it as `credentials.json` and save it at `C:\Users\<you>\.jarvis\credentials.json`, outside every repository. It is never copied to the host and never pasted into a chat.
 2. Copy `.env.example` to `.env` if not done; set `JARVIS_GMAIL_ACCOUNT`.
-3. Run `pwsh -NoProfile -File scripts/jarvis-auth.ps1 -CredentialsPath C:\path\to\credentials.json`. A browser window asks for consent to the single scope `gmail.readonly`. The script writes `token.json`, copies it to `/data/secrets/` on the host through the Docker context, and deletes the local copy.
+3. In a terminal of your own (not through an AI session), run `pwsh -NoProfile -File scripts/jarvis-auth.ps1` (add `-CredentialsPath` if the file is elsewhere). A browser window asks for consent to the single scope `gmail.readonly`. The script writes `token.json`, copies it to `/data/secrets/` on the host through the Docker context, and deletes the local copy.
 4. `pwsh -NoProfile -File scripts/start.ps1` builds and starts the stack, including `jarvis`.
 
 To revoke: remove the app at https://myaccount.google.com/permissions and delete `/data/secrets/token.json` on the host.

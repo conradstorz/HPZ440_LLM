@@ -25,7 +25,7 @@ Operations project for serving 7B-class GGUF models from the HPZ440 LAN server w
 Phase 1 of the Jarvis assistant runs as the `jarvis` service: read-only Gmail capture, local classification, evidence search, drafts, and a briefing page. Setup and use: `docs/jarvis.md`.
 
 ```powershell
-pwsh -NoProfile -File scripts/jarvis-auth.ps1 -CredentialsPath C:\path\to\credentials.json   # once
+pwsh -NoProfile -File scripts/jarvis-auth.ps1   # once; reads C:\Users\<you>\.jarvis\credentials.json by default
 pwsh -NoProfile -File scripts/jarvis-run.ps1
 pwsh -NoProfile -File scripts/jarvis-reindex.ps1
 ```

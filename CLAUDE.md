@@ -20,7 +20,7 @@ pwsh -NoProfile -File scripts/benchmark.ps1 [-Prompt '...'] [-MaxTokens 64]  # w
 pwsh -NoProfile -File scripts/list-models.ps1                      # lists local models/*.gguf, not the remote dir
 pwsh -NoProfile -File scripts/check-gpu.ps1                        # nvidia-smi in a throwaway container on hpz440
 pwsh -NoProfile -File scripts/fetch-model.ps1 [-Repo r] [-File f]  # one-shot container downloads a GGUF into HOST_MODEL_DIR on the host
-pwsh -NoProfile -File scripts/jarvis-auth.ps1 -CredentialsPath <credentials.json>   # one-time Gmail consent, copies token to host
+pwsh -NoProfile -File scripts/jarvis-auth.ps1 [-CredentialsPath p]   # one-time Gmail consent (default ~/.jarvis/credentials.json), copies token to host
 pwsh -NoProfile -File scripts/jarvis-run.ps1                                        # POST /run then GET /health
 pwsh -NoProfile -File scripts/jarvis-reindex.ps1                                    # rebuild FTS index in the container
 ```
