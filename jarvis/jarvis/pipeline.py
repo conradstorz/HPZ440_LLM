@@ -22,8 +22,9 @@ OVERLAP = timedelta(hours=1)
 
 
 def _process(nko: NKO, *, llm: LLMClient, store: Store, journal: Journal, index: Index, policy: Policy,
-             briefing: Briefing, settings: Settings, summary: RunSummary) -> None:
+             briefing: Briefing, settings: Settings, summary: RunSummary, stage: list[str]) -> None:
     """Advance one message from whatever version it has to v2. Raises on the first failing stage."""
+    stage[0] = "capture"
     if not store.exists(nko.dedup_key):
         store.save_version(nko)
         journal.append(JournalEvent.new("capture", nko_id=nko.id, dedup_key=nko.dedup_key, version=0,
@@ -31,6 +32,7 @@ def _process(nko: NKO, *, llm: LLMClient, store: Store, journal: Journal, index:
         index.index(nko)
         summary.captured += 1
     current = store.get_latest(nko.dedup_key)
+    stage[0] = "classify"
     corrections = briefing.corrections_for(sender_address(current), sender_domain(current))
     if not current.classifications:
         policy.check("search")
@@ -38,6 +40,7 @@ def _process(nko: NKO, *, llm: LLMClient, store: Store, journal: Journal, index:
         current = classify(current, evidence, corrections, llm, policy=policy, journal=journal, content_chars=settings.content_chars)
         store.save_version(current)
         summary.classified += 1
+    stage[0] = "draft"
     if not current.recommendations:
         current = draft(current, corrections, llm, policy=policy, journal=journal, content_chars=settings.content_chars)
         store.save_version(current)
@@ -51,20 +54,28 @@ def run_once(*, sources: list[Source], llm: LLMClient, store: Store, journal: Jo
     last = journal.last_run()
     since = (last.ts - OVERLAP) if last else (now - timedelta(days=settings.initial_lookback_days))
     summary = RunSummary(since=since)
-    pending: list[NKO] = [n for n in store.iter_latest() if not n.recommendations]
+    seen: set[str] = set()
+    pending: list[NKO] = []
+    for nko in [n for n in store.iter_latest() if not n.recommendations]:
+        if nko.dedup_key not in seen:
+            seen.add(nko.dedup_key)
+            pending.append(nko)
     for source in sources:
-        pending.extend(source.poll(since))
+        for nko in source.poll(since):
+            if nko.dedup_key not in seen:
+                seen.add(nko.dedup_key)
+                pending.append(nko)
     for nko in pending:
+        stage = ["capture"]
         try:
             _process(nko, llm=llm, store=store, journal=journal, index=index, policy=policy, briefing=briefing,
-                     settings=settings, summary=summary)
+                     settings=settings, summary=summary, stage=stage)
         except Exception as e:  # noqa: BLE001 - one message must never stop the run
             summary.errors += 1
             latest = store.get_latest(nko.dedup_key)
-            stage = "capture" if latest is None else "classify" if not latest.classifications else "draft"
             journal.append(JournalEvent.new("error", nko_id=nko.id, dedup_key=nko.dedup_key,
                                             version=latest.version if latest else None,
-                                            payload={"stage": stage, "message": f"{type(e).__name__}: {e}"[:1000]}))
+                                            payload={"stage": stage[0], "message": f"{type(e).__name__}: {e}"[:1000]}))
     journal.append(JournalEvent.new("run", payload={**summary.model_dump(mode="json")}))
     return summary
 

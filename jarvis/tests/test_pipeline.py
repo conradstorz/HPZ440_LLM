@@ -70,3 +70,23 @@ def test_corrections_reach_the_prompt(data_dir, store):
     llm = FakeLLM([CLS, DRF])
     run_once(sources=[FakeSource([make_nko("gmail:a:1", subject="Later")])], llm=llm, **deps)
     assert "always ask me" in llm.calls[0]["user"]
+
+
+def test_error_stage_is_capture_when_indexing_fails(data_dir, store, monkeypatch):
+    deps = _deps(data_dir, store)
+    monkeypatch.setattr(deps["index"], "index", lambda nko: (_ for _ in ()).throw(RuntimeError("disk")))
+    s = run_once(sources=[FakeSource([make_nko("gmail:a:0")])], llm=FakeLLM([]), **deps)
+    assert s.errors == 1
+    assert deps["journal"].last_error_for("gmail:a:0").payload["stage"] == "capture"
+
+
+def test_pending_is_deduplicated_within_one_run(data_dir, store):
+    deps = _deps(data_dir, store)
+    n = make_nko("gmail:a:0")
+    # first run: classify fails three times -> v0 only
+    run_once(sources=[FakeSource([n])], llm=FakeLLM([LLMError("a"), LLMError("b"), LLMError("c")]), **deps)
+    # second run: FakeSource re-yields the same v0; it must be processed once, not twice
+    llm = FakeLLM([CLS, DRF])
+    s = run_once(sources=[FakeSource([n])], llm=llm, **deps)
+    assert (s.classified, s.drafted, s.errors) == (1, 1, 0) and len(llm.calls) == 2
+    assert sum(1 for e in deps["journal"].iter_all() if e.kind == "classify") == 1
