@@ -13,7 +13,7 @@ Each phase is one spec, plan, implement cycle (`docs/superpowers/specs/`, `docs/
 | --- | --- | --- |
 | Repo scope | This repo grows into Jarvis. | Jarvis services are added to `compose.yaml`; application code lives here. |
 | Inference server | Keep `llama.cpp` (`llm-api`). | Jarvis talks to `http://llm-api:8080/v1` inside the compose network. Ollama is not adopted. |
-| GPU | RTX 3060 12GB, not yet installed. | Phase 0 blocks on hardware. Model class stays 7B Q4_K_M/Q5_K_M. |
+| GPU | RTX 3060 12GB, installed 2026-09-29 (driver 595.91.07). | Phase 0 hardware gate cleared. Model class stays 7B Q4_K_M/Q5_K_M. |
 | First mailbox | Gmail, `conradstorz@gmail.com`. | Gmail API with OAuth. Read-only scope until Phase 3. |
 | Application stack | Python managed with `uv`. | One `jarvis` container (FastAPI or similar) beside `llm-api` and `open-webui`. |
 | Archive location | HPZ440 local disk first, Synology later. | New `HOST_JARVIS_DATA_DIR` in `.env`, bind-mounted like `HOST_MODEL_DIR`. NAS migration is a cross-cutting track. |
@@ -24,13 +24,13 @@ Each phase is one spec, plan, implement cycle (`docs/superpowers/specs/`, `docs/
 - `open-webui`: browser chat against `llm-api`, published on `WEBUI_HOST_PORT` (3000), data in the `open-webui-data` volume.
 - Workstation scripts: `check-context`, `start`, `stop`, `health`, `switch-model`, `benchmark`, `list-models`.
 - Tests: two standalone PowerShell scripts that regex-match literal file content.
-- Nothing has run on real GPU hardware yet.
+- Validated on the RTX 3060 on 2026-09-29: Qwen2.5-7B-Instruct Q4_K_M at 56 generated tok/s, ~4.7 GB VRAM (see `docs/models.md`).
 
 Mapping to the Jarvis logical components:
 
 | Jarvis component | Status in this repo |
 | --- | --- |
-| Local inference service | Exists (`llm-api`). Unvalidated on hardware. |
+| Local inference service | Exists (`llm-api`). Validated on hardware 2026-09-29. |
 | User interface | Open WebUI exists as a raw chat surface only. No briefing, approvals, or rule UI. |
 | Jarvis application | Absent. |
 | Mail connector | Absent. |

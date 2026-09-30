@@ -25,6 +25,6 @@ Filled in from `scripts/benchmark.ps1` output (`generated_tokens_per_second`) on
 
 | Model | Quantization | Context | Generated tok/s | Date | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Qwen2.5-7B-Instruct | Q4_K_M | 4096 | pending hardware | pending hardware | First Phase 0 target. |
+| Qwen2.5-7B-Instruct | Q4_K_M | 4096 | 56.4 | 2026-09-29 | Prompt 186.9 tok/s, 4.7 GB VRAM used, 128 max tokens. `benchmarks/benchmark-20260929-202137.json`. |
 
 Triage target for Phase 1: one email classified in under 10 seconds. If measured throughput allows, raise `LLM_CONTEXT_SIZE` to 8192 in `.env` and add a row here.
