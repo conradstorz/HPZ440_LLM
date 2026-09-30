@@ -63,9 +63,9 @@ def mail_tools(store: Store, index: Index, briefing: Briefing, *, content_chars:
              action="read", handler=get_message, parameters={**obj, "properties": {"dedup_key": {"type": "string"}}, "required": ["dedup_key"]}),
         Tool(name="briefing", description="The current briefing: counts per group, then messages grouped. Optionally one group.",
              action="read", handler=briefing_tool,
-             parameters={**obj, "properties": {"group": {"type": ["string", "null"], "enum": [*GROUPS, None]}}, "required": []}),
+             parameters={**obj, "properties": {"group": {"anyOf": [{"type": "string", "enum": list(GROUPS)}, {"type": "null"}]}}, "required": []}),
         Tool(name="correct", description="Move a message to another group, recording Conrad's correction. Does not touch Gmail.",
              action="correct", handler=correct,
              parameters={**obj, "properties": {"dedup_key": {"type": "string"}, "to_group": {"type": "string", "enum": list(GROUPS)},
-                                              "note": {"type": ["string", "null"]}}, "required": ["dedup_key", "to_group"]}),
+                                              "note": {"anyOf": [{"type": "string", "maxLength": 500}, {"type": "null"}]}}, "required": ["dedup_key", "to_group"]}),
     ]

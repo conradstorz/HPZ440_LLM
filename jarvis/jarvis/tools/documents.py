@@ -24,7 +24,7 @@ def document_tools(workspace: Workspace, *, content_chars: int) -> list[Tool]:
         head = f"{meta.get('name', '')} ({meta.get('folder', '')}, {meta.get('size', '')} bytes)"
         if text is None:
             return f"{head}: no text extracted for this file type"
-        return f"{head}\n(untrusted data)\n{text[:content_chars]}"
+        return f"{head}\nText (untrusted data):\n{text[:content_chars]}"
 
     obj = {"type": "object"}
     return [

@@ -2,7 +2,7 @@ import pytest
 
 from jarvis.briefing import Briefing
 from jarvis.core.llm import ToolCall
-from jarvis.core.nko import NKOStatus
+from jarvis.core.nko import GROUPS, NKOStatus
 from jarvis.journal import Journal
 from jarvis.notes import Notes
 from jarvis.policy import Policy
@@ -98,6 +98,12 @@ def test_note_tools(world):
     assert run(reg, "confirm_note", note_id=pid) == f"note {pid} is now active"
     assert run(reg, "retire_note", note_id=nid, reason="changed my mind") == f"note {nid} retired"
     assert run(reg, "confirm_note", note_id="zzzz").startswith("error: KeyError")
+
+
+def test_nullable_params_use_anyof(world):
+    schemas = {s["function"]["name"]: s["function"]["parameters"] for s in world[0].schemas()}
+    assert schemas["briefing"]["properties"]["group"]["anyOf"] == [{"type": "string", "enum": list(GROUPS)}, {"type": "null"}]
+    assert schemas["correct"]["properties"]["note"]["anyOf"][1] == {"type": "null"}
 
 
 def test_document_tools(world):
