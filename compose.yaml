@@ -42,5 +42,21 @@ services:
     volumes:
       - open-webui-data:/app/backend/data
 
+  jarvis:
+    build: ./jarvis
+    restart: unless-stopped
+    depends_on:
+      - llm-api
+    ports:
+      - "${JARVIS_HOST_PORT:-8090}:8090"
+    environment:
+      - JARVIS_DATA_DIR=/data
+      - JARVIS_LLM_BASE_URL=http://llm-api:8080
+      - JARVIS_LLM_MODEL=${LLM_MODEL_PATH:-/models/model.gguf}
+      - JARVIS_GMAIL_ACCOUNT=${JARVIS_GMAIL_ACCOUNT:-}
+      - JARVIS_GMAIL_QUERY=${JARVIS_GMAIL_QUERY:-in:inbox}
+    volumes:
+      - "${HOST_JARVIS_DATA_DIR:-/srv/llm/jarvis-data}:/data"
+
 volumes:
   open-webui-data:

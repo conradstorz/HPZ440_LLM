@@ -51,6 +51,21 @@ Assert-FileContains 'docs/operations.md' 'WEBUI_SECRET_KEY'
 Assert-FileContains 'README.md' 'scripts/fetch-model\.ps1'
 Assert-FileContains 'README.md' 'docs/host-setup\.md'
 
+Assert-FileContains 'compose.yaml' '^  jarvis:$'
+Assert-FileContains 'compose.yaml' '\$\{JARVIS_HOST_PORT:-8090\}:8090'
+Assert-FileContains 'compose.yaml' '\$\{HOST_JARVIS_DATA_DIR:-/srv/llm/jarvis-data\}:/data'
+Assert-FileContains 'compose.yaml' 'JARVIS_LLM_BASE_URL=http://llm-api:8080'
+Assert-FileContains '.env.example' '^JARVIS_HOST_PORT=8090$'
+Assert-FileContains '.env.example' '^JARVIS_GMAIL_ACCOUNT='
+Assert-FileContains '.env.example' '^JARVIS_GMAIL_QUERY=in:inbox$'
+Assert-FileContains '.gitignore' '^token\.json$'
+Assert-FileContains '.gitignore' '^credentials\.json$'
+Assert-FileContains '.gitignore' '^\*\.sqlite$'
+Assert-FileContains '.gitignore' '^\.venv/$'
+Assert-FileContains 'docs/jarvis.md' '^# Jarvis'
+Assert-FileContains 'README.md' 'scripts/jarvis-auth\.ps1'
+Assert-FileContains 'docs/roadmap.md' 'Phase 1 status'
+
 $Gitkeep = Join-Path $Root 'models/.gitkeep'
 if (-not (Test-Path $Gitkeep)) { throw 'Missing models/.gitkeep placeholder' }
 
