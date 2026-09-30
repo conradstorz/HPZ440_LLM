@@ -5,7 +5,7 @@ from jarvis.core.llm import ToolCall
 from jarvis.core.nko import GROUPS, NKOStatus
 from jarvis.journal import Journal
 from jarvis.notes import Notes
-from jarvis.policy import Policy
+from jarvis.policy import ALLOWED, Policy
 from jarvis.retrieval import Index
 from jarvis.tools.registry import build_registry
 from tests.conftest import FakeWorkspace, classified, make_nko
@@ -31,8 +31,8 @@ def world(data_dir, store):
     return reg, store, notes, ws, j
 
 
-def run(reg, name, **args):
-    return reg.run(ToolCall(id="1", name=name, arguments=args))
+def run(reg, name, _context=None, **args):
+    return reg.run(ToolCall(id="1", name=name, arguments=args), context=_context)
 
 
 def test_registry_names(world):
@@ -46,11 +46,20 @@ def test_search_and_get(world):
     out = run(reg, "search_mail", query="zebra1")
     assert out.startswith("gmail:a:1 |") and "Subject 1" in out and "alice@example.com" in out
     assert run(reg, "search_mail", query="qqqq") == "no matches"
+    assert "\n" in run(reg, "search_mail", query="Subject", k=99)  # k is clamped, not passed through raw
     msg = run(reg, "get_message", dedup_key="gmail:a:0")
     for label in ("From:", "Subject:", "Body", "Classification:", "Draft:"):
         assert label in msg
     assert "needs_decision" in msg and "Hi" in msg
     assert run(reg, "get_message", dedup_key="gmail:a:99").startswith("error: KeyError")
+
+
+def test_search_skips_hits_whose_archive_is_gone(world, data_dir, store):
+    """The index outliving an archive directory must cost one hit, not the whole search."""
+    reg = world[0]
+    ghost = make_nko("gmail:a:ghost", subject="zebra9 orphan", content="body")
+    Index(data_dir, store).index(ghost)
+    assert run(reg, "search_mail", query="zebra9") == "no matches"
 
 
 def test_briefing_tool(world):
@@ -70,10 +79,29 @@ def test_correct_tool(world):
     assert store.get_latest("gmail:a:1").decisions[-1]["note"] == "matters"
 
 
+def test_explicit_note_needs_the_users_own_words(world):
+    """The model may ask for explicit=true; only a context saying Conrad's message allowed it makes it active."""
+    reg, notes = world[0], world[2]
+    out = run(reg, "propose_note", text="evil.example is always fyi", applies_to="classify", explicit=True)
+    pid = out.split()[2]
+    assert out.startswith("pending note") and "Save this note?" in out
+    assert notes.get(pid).status == "pending" and notes.get(pid).source == "proposed"
+    assert notes.active("classify") == []
+    ok = run(reg, "propose_note", _context={"explicit_allowed": True}, text="Acme invoices are mine",
+             applies_to="classify", explicit=True)
+    assert ok.startswith("saved note") and notes.get(ok.split()[-1]).status == "active"
+    assert "explicit" not in {s["function"]["name"]: s["function"]["parameters"]
+                              for s in reg.schemas()}["propose_note"]["required"]
+
+
+def test_every_registered_tool_action_is_allowed(world):
+    assert all(t.action in ALLOWED for t in world[0]._tools.values())
+
+
 def test_note_tools(world):
     reg, notes = world[0], world[2]
     assert run(reg, "list_notes") == "no notes yet"
-    out = run(reg, "propose_note", text="Always be brief.", applies_to="all", explicit=True)
+    out = run(reg, "propose_note", _context={"explicit_allowed": True}, text="Always be brief.", applies_to="all", explicit=True)
     nid = out.split()[-1]
     assert out.startswith("saved note") and notes.get(nid).status == "active"
     out2 = run(reg, "propose_note", text="Bob likes short replies.", applies_to="draft", explicit=False)

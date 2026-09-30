@@ -34,7 +34,9 @@ class WorkspaceClient:
         self.base_url = base_url.rstrip("/")
         self._token_path = Path(token_path)
         self._client = httpx.Client(timeout=timeout, transport=transport)
-        self._last: dict[str, dict] = {}
+        # sha256 -> every file in the last listing with that content; identical files under different names
+        # share one sha and must not overwrite each other.
+        self._last: dict[str, list[dict]] = {}
 
     def _headers(self) -> dict[str, str]:
         if not self.base_url:
@@ -62,15 +64,20 @@ class WorkspaceClient:
         matches = self._request("POST", "/scan", json={"patterns": [{"glob": glob}]}).json().get("matches", [])
         docs = [{"name": m.get("name") or m.get("path", ""), "folder": m.get("folder", ""), "size": m.get("size", 0),
                  "mtime": m.get("mtime", ""), "sha256": m.get("sha256", "")} for m in matches]
-        self._last = {d["sha256"]: d for d in docs if d["sha256"]}
+        last: dict[str, list[dict]] = {}
+        for d in docs:
+            if d["sha256"]:
+                last.setdefault(d["sha256"], []).append(d)
+        self._last = last
         return docs
 
     def read_document(self, sha256: str) -> tuple[dict, str | None]:
+        # No implicit whole-workstation scan: a read is only ever for something a listing already showed.
         if not self._last:
-            self.list_documents("*")
-        matches = [d for k, d in self._last.items() if k.startswith(sha256)]
+            raise KeyError("call list_documents first")
+        matches = [ds for k, ds in self._last.items() if k.startswith(sha256)]
         if len(matches) != 1:
             raise KeyError(f"{sha256}: {'no' if not matches else 'ambiguous'} match in the last listing; call list_documents first")
-        meta = matches[0]
+        meta = matches[0][0]
         data = self._request("GET", f"/file/{meta['sha256']}").content
         return meta, extract_text(meta["name"], data)

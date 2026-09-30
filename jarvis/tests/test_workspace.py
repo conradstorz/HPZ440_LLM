@@ -48,7 +48,31 @@ def test_list_documents(client):
     assert auth == "Bearer tok-123"
 
 
+def test_read_document_without_a_listing_is_refused(client):
+    with pytest.raises(KeyError, match="call list_documents first"):
+        client.read_document(SHA_MD)
+    assert client.seen == []  # no implicit whole-workstation scan
+
+
+def test_duplicate_shas_keep_every_file_in_the_listing(tmp_path: Path):
+    tok = tmp_path / "agent_token"
+    tok.write_text("tok-123\n", encoding="utf-8")
+
+    def handler(req: httpx.Request):
+        if req.url.path == "/scan":
+            return httpx.Response(200, json={"matches": [
+                {"name": "a.md", "folder": "C:/One", "size": 3, "mtime": "t", "sha256": SHA_MD},
+                {"name": "b.md", "folder": "C:/Two", "size": 3, "mtime": "t", "sha256": SHA_MD}]})
+        return httpx.Response(200, content=b"same bytes")
+
+    c = WorkspaceClient("http://agent:8765", tok, transport=httpx.MockTransport(handler))
+    assert [d["name"] for d in c.list_documents()] == ["a.md", "b.md"]
+    meta, text = c.read_document(SHA_MD[:12])
+    assert meta["name"] == "a.md" and text == "same bytes"  # the first of the duplicates, not the last
+
+
 def test_read_document_by_prefix_and_types(client):
+    client.list_documents("*")
     meta, text = client.read_document(SHA_MD[:12])
     assert meta["name"] == "doc_sample.md" and "Hello from the workstation" in text
     meta, text = client.read_document(SHA_PDF)

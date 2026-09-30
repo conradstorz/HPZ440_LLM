@@ -15,11 +15,14 @@ def _line(n: NKO) -> str:
 
 def mail_tools(store: Store, index: Index, briefing: Briefing, *, content_chars: int) -> list[Tool]:
     def search_mail(query: str, k: int = 5) -> str:
-        hits = index.search(query, k=int(k))
-        if not hits:
-            return "no matches"
-        return "\n".join(f"{h.dedup_key} | {h.received_at.date()} | {sender_address(store.get_latest(h.dedup_key))} | {h.subject} | {h.snippet}"
-                         for h in hits)
+        hits = index.search(query, k=max(1, min(20, int(k))))
+        lines = []
+        for h in hits:
+            n = store.get_latest(h.dedup_key)
+            if n is None:  # the index outlived the archive directory; skip rather than fail the whole search
+                continue
+            lines.append(f"{h.dedup_key} | {h.received_at.date()} | {sender_address(n)} | {h.subject} | {h.snippet}")
+        return "\n".join(lines) if lines else "no matches"
 
     def get_message(dedup_key: str) -> str:
         n = store.get_latest(dedup_key)
