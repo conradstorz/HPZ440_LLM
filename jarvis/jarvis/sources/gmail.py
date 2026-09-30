@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -38,15 +39,13 @@ class GoogleGmailAPI:
 
         if not Path(token_path).exists():
             raise AuthRequired(f"{token_path} not found. Run scripts/jarvis-auth.ps1 on the workstation first.")
-        import json
-
         try:
             info = json.loads(Path(token_path).read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
             raise AuthRequired(f"{token_path} is unreadable ({e}). Run scripts/jarvis-auth.ps1 again.") from e
         granted = set(info.get("scopes") or [])
-        if granted - set(SCOPES):
-            raise AuthRequired(f"{token_path} carries scopes beyond read-only: {sorted(granted)}. Refusing to run. Delete it and run scripts/jarvis-auth.ps1 again.")
+        if granted != set(SCOPES):
+            raise AuthRequired(f"{token_path} scopes are {sorted(granted)}; Jarvis requires exactly {SCOPES}. Delete it and run scripts/jarvis-auth.ps1 again.")
         creds = Credentials.from_authorized_user_info(info, SCOPES)
         if not creds.valid:
             if creds.expired and creds.refresh_token:
@@ -174,6 +173,8 @@ class GmailSource:
     name = "gmail"
 
     def __init__(self, api: GmailAPI, store: Store, *, account: str, query: str, max_attachment_bytes: int) -> None:
+        if not account:
+            raise ValueError("JARVIS_GMAIL_ACCOUNT is empty; set it in .env before running Jarvis")
         self._api, self._store = api, store
         self._account, self._query, self._max = account, query, max_attachment_bytes
 

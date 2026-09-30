@@ -104,7 +104,25 @@ def test_token_with_extra_scope_is_refused(tmp_path: Path):
     }), encoding="utf-8")
     with pytest.raises(AuthRequired) as e:
         GoogleGmailAPI(token)
-    assert "beyond read-only" in str(e.value) and "jarvis-auth.ps1" in str(e.value)
+    assert "requires exactly" in str(e.value) and "jarvis-auth.ps1" in str(e.value)
+
+
+def test_token_with_missing_scope_is_refused(tmp_path: Path):
+    import json
+    token = tmp_path / "token.json"
+    token.write_text(json.dumps({
+        "token": "x", "refresh_token": "y", "client_id": "c", "client_secret": "s",
+        "token_uri": "https://oauth2.googleapis.com/token", "scopes": [],
+    }), encoding="utf-8")
+    with pytest.raises(AuthRequired) as e:
+        GoogleGmailAPI(token)
+    assert "requires exactly" in str(e.value)
+
+
+def test_empty_account_is_refused(store):
+    with pytest.raises(ValueError) as e:
+        GmailSource(FakeAPI(), store, account="", query="in:inbox", max_attachment_bytes=1)
+    assert "JARVIS_GMAIL_ACCOUNT" in str(e.value)
 
 
 def test_unreadable_token_is_auth_required(tmp_path: Path):
