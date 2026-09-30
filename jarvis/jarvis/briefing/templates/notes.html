@@ -5,6 +5,9 @@
 <p class="meta">Active notes shape chat, classification, and drafts. Pending notes wait for your yes in chat and expire after a day.</p>
 {% for status in ["active", "pending", "retired"] %}
 <h3>{{ status|capitalize }}</h3>
+{% if status == "pending" %}<form method="post" action="/notes/retire-pending" class="inline">
+  <input type="text" name="reason" placeholder="why (optional)" size="24">
+  <button type="submit">Retire all pending</button></form>{% endif %}
 {% set items = notes|selectattr("status", "equalto", status)|list %}
 {% for n in items %}
 <div class="card"><code>{{ n.id }}</code> · v{{ n.version }} · {{ n.applies_to }} · {{ n.source }} · {{ n.created_at.strftime('%Y-%m-%d %H:%M') }}

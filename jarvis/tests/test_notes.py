@@ -75,3 +75,15 @@ def test_all_latest_and_reload(data_dir):
     a = Notes(data_dir, j).propose("keep", "all", "explicit")
     fresh = Notes(data_dir, j)
     assert [n.id for n in fresh.all_latest()] == [a.id]
+
+
+def test_retire_all_pending(notes):
+    a = notes.propose("keep me", "chat", "explicit")
+    p1 = notes.propose("junk one", "chat", "proposed")
+    p2 = notes.propose("junk two", "chat", "proposed")
+    assert notes.retire_all_pending("junk from Open WebUI task prompts") == 2
+    assert notes.get(a.id).status == "active"
+    for p in (p1, p2):
+        assert notes.get(p.id).status == "retired" and notes.get(p.id).reason == "junk from Open WebUI task prompts"
+        assert notes.get(p.id).version == 1
+    assert notes.retire_all_pending("again") == 0  # idempotent: nothing pending is left

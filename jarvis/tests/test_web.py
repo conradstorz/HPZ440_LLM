@@ -104,6 +104,19 @@ def test_notes_page_and_retire(client):
     assert client.post("/notes/retire", data={"note_id": "zzzz", "reason": "no"}).status_code == 404
 
 
+def test_retire_all_pending_from_the_notes_page(client):
+    keep = client.notes.propose("Always be brief.", "all", "explicit")
+    junk = [client.notes.propose(f"The tags for the chat history are: General. {i}", "chat", "proposed") for i in range(3)]
+    assert "Retire all pending" in client.get("/notes").text
+    r = client.post("/notes/retire-pending", data={"reason": "junk from task prompts"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/notes"
+    assert all(client.notes.get(n.id).status == "retired" for n in junk)
+    assert all(client.notes.get(n.id).reason == "junk from task prompts" for n in junk)
+    assert client.notes.get(keep.id).status == "active"
+    # the reason is optional, and an empty sweep is still a redirect, not an error
+    assert client.post("/notes/retire-pending", data={}, follow_redirects=False).status_code == 303
+
+
 def test_openai_routes_mounted(client):
     assert client.get("/v1/models").json()["data"][0]["id"] == "jarvis"
     r = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "ping"}]})

@@ -82,6 +82,11 @@ def create_app(*, store: Store, journal: Journal, briefing: Briefing, run: Calla
                 raise HTTPException(400, str(e))
             return RedirectResponse("/notes", status_code=303)
 
+        @app.post("/notes/retire-pending")
+        def retire_pending(reason: str = Form("retired in bulk")) -> RedirectResponse:
+            notes.retire_all_pending(reason.strip() or "retired in bulk")
+            return RedirectResponse("/notes", status_code=303)
+
     @app.get("/health")
     def health() -> JSONResponse:
         last = journal.last_run()

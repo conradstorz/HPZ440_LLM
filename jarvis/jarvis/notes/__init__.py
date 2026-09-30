@@ -84,6 +84,15 @@ class Notes:
     def retire(self, note_id: str, reason: str) -> Note:
         return self._transition(note_id, ("active", "pending"), "retired", reason)
 
+    def retire_all_pending(self, reason: str) -> int:
+        """Retire every pending note at once. One stray model turn can leave a dozen proposals behind."""
+        retired = 0
+        for n in self.all_latest():
+            if n.status == "pending":
+                self._transition(n.id, ("pending",), "retired", reason)
+                retired += 1
+        return retired
+
     def all_latest(self) -> list[Note]:
         return sorted(self._load().values(), key=lambda n: n.created_at)
 
