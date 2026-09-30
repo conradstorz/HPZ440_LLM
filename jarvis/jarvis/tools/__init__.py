@@ -54,7 +54,7 @@ class ToolRegistry:
             result = str(tool.handler(**call.arguments))
         except Exception as e:  # noqa: BLE001 - the model sees the error text and can recover
             ok, result = False, f"error: {type(e).__name__}: {e}"
-        if len(result) > tool.result_chars:
+        if ok and len(result) > tool.result_chars:  # error strings are short and must stay whole so the model sees the type
             result = result[: tool.result_chars] + TRUNCATED
         self._journal.append(JournalEvent.new("tool_call", payload={"name": tool.name, "arguments": call.arguments, "ok": ok,
                                                                     "summary": result[:200], "conversation_id": conversation_id}))
