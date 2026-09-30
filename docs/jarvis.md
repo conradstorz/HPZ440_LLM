@@ -10,7 +10,7 @@ Jarvis reads new Gmail with a read-only credential, archives every message as an
 ```
 /data/archive/<key>/nko-v0.json ...   one directory per message; v0 is the fact of record, never rewritten
 /data/archive/<key>/raw.eml           the original RFC 822 message
-/data/archive/<key>/attachments/      one file per attachment, named by content hash
+/data/archive/<key>/attachments/      one file per attachment, named `<sha256 prefix>-<filename>`
 /data/journal/YYYY-MM-DD.jsonl        append-only event log: run, capture, classify, draft, correction, policy_reject, error
 /data/index/mail.sqlite               full-text index; disposable, rebuilt from the archive
 /data/secrets/token.json              Gmail refresh token, read-only scope
