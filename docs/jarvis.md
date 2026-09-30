@@ -96,6 +96,16 @@ never calls into the HPZ440.
 The token is read from disk on each request, not at startup, so the service starts fine before the token exists;
 `list_documents` and `read_document` simply report that the agent is unavailable. Nothing read this way is archived.
 
+### Live check
+
+Date: 2026-09-30, first deploy of the Converse branch. Through the `jarvis` model endpoint (`POST /v1/chat/completions`, non-stream, from the workstation):
+
+- "How many archived messages need my decision?" produced one `briefing` tool call and a correct count with message keys in 8 s. Journal: one `tool_call` (ok), one `chat` event with `steps: 1`.
+- "remember: this is a live-check note ..." produced one `propose_note` call; the note landed active on `/notes` with `source: explicit` and was retired from the page afterwards.
+- Zero `policy_reject` events across both turns.
+- Open WebUI on the existing volume had the single llama.cpp URL persisted in its database, so the two connection rows (`openai.api_base_urls`, `openai.api_keys`) were updated in place before the restart; `jarvis` then appeared in its model list without touching the Admin UI.
+- Not yet exercised: a proposed-then-confirmed note from inside Open WebUI, and workstation documents (no `JARVIS_WORKSPACE_AGENT_URL` set yet).
+
 ## Guarantees enforced in code
 
 - The OAuth token is requested with `gmail.readonly` only, and the client refuses to start if the stored token carries any other scope.
