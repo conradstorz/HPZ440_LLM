@@ -13,7 +13,10 @@ from tests.conftest import classified, make_nko
 
 @pytest.fixture
 def client(data_dir, store):
-    n = classified(make_nko("gmail:a:1", subject="Hello there"), "fyi")
+    n = make_nko("gmail:a:1", subject="Hello there")
+    store.save_version(n)  # the real pipeline writes v0 first; Store.count() counts v0 directories
+    n = classified(n, "fyi")
+    store.save_version(n)
     n = n.derive(recommendations=[{"reply_text": None, "proposed_action": "none", "rationale": "r", "model": "rule", "at": "t"}], status=NKOStatus.DRAFTED)
     store.save_version(n)
     journal = Journal(data_dir)

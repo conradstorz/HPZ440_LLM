@@ -80,4 +80,5 @@ class Store:
                 yield NKO.model_validate_json(files[-1][1].read_text(encoding="utf-8"))
 
     def count(self) -> int:
-        return sum(1 for _ in self.iter_latest())
+        """Archived messages, counted from the directory listing only — no JSON is parsed."""
+        return sum(1 for d in self.archive.iterdir() if (d / "nko-v0.json").exists())
