@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -73,3 +73,28 @@ def test_entry_validation():
         ClassificationEntry(**{**GOOD, "priority": "urgent"})
     e = ClassificationEntry(**{**GOOD, "deadline": None, "requested_action": None})
     assert e.deadline is None
+
+
+def test_free_text_deadline_is_coerced_to_none(deps):
+    llm = FakeLLM([{**GOOD, "deadline": "No specific deadline mentioned."}])
+    v1 = classify(make_nko(), [], [], llm, **deps)
+    assert len(llm.calls) == 1
+    assert v1.classifications[0]["deadline"] is None
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("2025-10-03", "2025-10-03"),
+    ("2025-10-03T09:00:00", "2025-10-03"),
+    (None, None),
+])
+def test_iso_deadline_survives(raw, expected):
+    e = ClassificationEntry(**{**GOOD, "deadline": raw})
+    assert e.deadline == (date.fromisoformat(expected) if expected else None)
+
+
+def test_schema_constrains_deadline_pattern():
+    deadline_schema = CLASSIFICATION_SCHEMA["properties"]["deadline"]
+    string_branch = next(b for b in deadline_schema["anyOf"] if b.get("type") == "string")
+    null_branch = next(b for b in deadline_schema["anyOf"] if b.get("type") == "null")
+    assert string_branch["pattern"] == r"^\d{4}-\d{2}-\d{2}$"
+    assert null_branch == {"type": "null"}

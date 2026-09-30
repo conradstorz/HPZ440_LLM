@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from jarvis.core.llm import LLMClient, LLMError
 from jarvis.core.nko import GROUPS, PRIORITIES, NKO, Evidence, NKOStatus, sender_address, utcnow
@@ -21,7 +21,8 @@ SYSTEM_PROMPT = (
     "delete, or label mail. Never invent facts that are not in the message or the evidence. Keep reasoning "
     "to two sentences.\n\nGroups: needs_decision (the recipient must decide or approve something), "
     "reply_suggested (a short reply is expected), fyi (informational, no action), likely_noise (marketing, "
-    "automated notices, newsletters the recipient has not engaged with)."
+    "automated notices, newsletters the recipient has not engaged with). deadline must be an ISO date "
+    "(YYYY-MM-DD) or null; never describe a deadline in words."
 )
 
 
@@ -33,6 +34,25 @@ class ClassificationEntry(BaseModel):
     priority: Literal["high", "normal", "low"]
     reasoning: str
 
+    @field_validator("deadline", mode="before")
+    @classmethod
+    def _coerce_deadline(cls, v: object) -> date | None:
+        if v is None or isinstance(v, date):
+            return v
+        if not isinstance(v, str):
+            return None
+        s = v.strip()
+        if not s:
+            return None
+        try:
+            return date.fromisoformat(s)
+        except ValueError:
+            pass
+        try:
+            return date.fromisoformat(s[:10])
+        except ValueError:
+            return None
+
 
 CLASSIFICATION_SCHEMA = {
     "type": "object",
@@ -40,7 +60,10 @@ CLASSIFICATION_SCHEMA = {
         "group": {"type": "string", "enum": list(GROUPS)},
         "topic": {"type": "string"},
         "requested_action": {"type": ["string", "null"]},
-        "deadline": {"type": ["string", "null"], "description": "ISO date YYYY-MM-DD or null"},
+        "deadline": {
+            "anyOf": [{"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, {"type": "null"}],
+            "description": "ISO date YYYY-MM-DD, or null when no concrete date is given",
+        },
         "priority": {"type": "string", "enum": list(PRIORITIES)},
         "reasoning": {"type": "string"},
     },
