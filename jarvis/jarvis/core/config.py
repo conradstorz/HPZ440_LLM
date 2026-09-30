@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     max_attachment_bytes: int = 25_000_000
     max_messages_per_run: int = 50
     content_chars: int = 6000
+    workspace_agent_url: str = ""
 
     @property
     def secrets_dir(self) -> Path:

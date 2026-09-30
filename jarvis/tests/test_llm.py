@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from jarvis.core.llm import FakeLLM, LlamaCppClient, LLMError
+from jarvis.core.llm import ChatTurn, FakeLLM, LlamaCppClient, LLMError, ToolCall
 
 
 def _transport(handler):
@@ -78,3 +78,57 @@ def test_fake_llm_queue():
     with pytest.raises(LLMError):
         f.complete_json("s", "u", {})
     assert len(f.calls) == 2
+
+
+def test_chat_parses_tool_calls():
+    def handler(req: httpx.Request):
+        body = json.loads(req.content)
+        assert body["tools"][0]["function"]["name"] == "search_mail" and body["tool_choice"] == "auto"
+        return httpx.Response(200, json={"choices": [{"finish_reason": "tool_calls", "message": {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "search_mail", "arguments": "{\"query\": \"bill\"}"}},
+                           {"type": "function", "function": {"name": "x", "arguments": "not json"}}]}}]})
+    c = LlamaCppClient("http://llm", "m", transport=_transport(handler))
+    turn = c.chat([{"role": "user", "content": "hi"}], [{"type": "function", "function": {"name": "search_mail", "parameters": {}}}])
+    assert turn.finish_reason == "tool_calls" and turn.content == ""
+    assert turn.tool_calls[0] == ToolCall(id="c1", name="search_mail", arguments={"query": "bill"})
+    assert turn.tool_calls[1].arguments == {"_raw": "not json"} and turn.tool_calls[1].id.startswith("call_")
+
+
+def test_chat_without_tools_omits_tools_key():
+    def handler(req):
+        assert "tools" not in json.loads(req.content)
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "hello"}}]})
+    c = LlamaCppClient("http://llm", "m", transport=_transport(handler))
+    assert c.chat([{"role": "user", "content": "hi"}]) == ChatTurn(content="hello", tool_calls=[], finish_reason="stop")
+
+
+def test_chat_stream_yields_deltas():
+    sse = ('data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+           'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'
+           'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'
+           'data: [DONE]\n\n')
+    def handler(req):
+        assert json.loads(req.content)["stream"] is True
+        return httpx.Response(200, content=sse.encode(), headers={"content-type": "text/event-stream"})
+    c = LlamaCppClient("http://llm", "m", transport=_transport(handler))
+    assert list(c.chat_stream([{"role": "user", "content": "hi"}])) == ["Hel", "lo"]
+
+
+def test_chat_http_error_is_llm_error():
+    c = LlamaCppClient("http://llm", "m", transport=_transport(lambda r: httpx.Response(503, text="down")))
+    with pytest.raises(LLMError, match="HTTP 503"):
+        c.chat([{"role": "user", "content": "hi"}])
+    with pytest.raises(LLMError):
+        list(c.chat_stream([{"role": "user", "content": "hi"}]))
+
+
+def test_fake_llm_chat_and_stream():
+    f = FakeLLM(turns=[ChatTurn(content=None, tool_calls=[ToolCall(id="1", name="t", arguments={})], finish_reason="tool_calls"),
+                       ChatTurn(content="done")], stream_chunks=["a", "b"])
+    assert f.chat([{"role": "user", "content": "x"}], [{"type": "function"}]).tool_calls[0].name == "t"
+    assert f.chat([]).content == "done"
+    assert list(f.chat_stream([])) == ["a", "b"]
+    assert f.chat_calls[0]["tools"] == [{"type": "function"}]
+    with pytest.raises(LLMError):
+        f.chat([])
