@@ -20,10 +20,7 @@ class Index:
         self.path = Path(data_dir) / "index" / "mail.sqlite"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path)
-        user_version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        if user_version == 0:
-            self._create()
-        elif user_version != SCHEMA_VERSION:
+        if self._conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
             self.rebuild()
 
     def _create(self) -> None:

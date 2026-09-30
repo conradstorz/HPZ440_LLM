@@ -25,8 +25,8 @@ def test_index_and_search(data_dir, store):
 
 
 def test_reindex_same_nko_does_not_duplicate(data_dir, store):
-    a, _, _ = _three(store)
     idx = Index(data_dir, store)
+    a, _, _ = _three(store)
     idx.index(a)
     idx.index(a)
     assert idx.count() == 1
@@ -41,6 +41,7 @@ def test_rebuild_from_store_gives_identical_results(data_dir, store):
     idx.close()
     (data_dir / "index" / "mail.sqlite").unlink()
     idx = Index(data_dir, store)
+    assert idx.count() == 3
     assert idx.rebuild() == 3
     assert [(e.dedup_key, e.snippet) for e in idx.search("statement invoice")] == before
 
