@@ -117,6 +117,7 @@ Date: 2026-09-30, first deploy of the Converse branch. Through the `jarvis` mode
 - Zero `policy_reject` events across both turns.
 - Open WebUI on the existing volume had the single llama.cpp URL persisted in its database, so the two connection rows (`openai.api_base_urls`, `openai.api_keys`) were updated in place before the restart; `jarvis` then appeared in its model list without touching the Admin UI.
 - Not yet exercised: a proposed-then-confirmed note from inside Open WebUI, and workstation documents (no `JARVIS_WORKSPACE_AGENT_URL` set yet).
+- First Open WebUI session found two defects, both fixed the same day: the persona let the model deny having Gmail access (it now names the mail tools and forbids that denial; "show me my recent messages" answers in 7 s), and the model could emit 30 to 40 tool calls in one response and overflow the context (now at most 3 per step, deduplicated, with a tighter token estimate and one overflow retry). Open WebUI's title and tag prompts had also been reaching Jarvis and creating junk pending notes; Jarvis now answers those `### Task:` prompts without tools, the Task Model was pointed at the raw llama.cpp model, and the junk notes were retired in bulk from `/notes`.
 
 ## Guarantees enforced in code
 
