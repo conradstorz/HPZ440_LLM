@@ -1,5 +1,5 @@
-import base64
 import hashlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -142,3 +142,82 @@ def test_consent_flow_rejects_empty_and_invalid_credentials(tmp_path: Path):
     empty.write_text("\ufeff{not json", encoding="utf-8")
     with pytest.raises(ValueError, match="not valid JSON"):
         run_consent_flow(empty, tmp_path / "token.json")
+
+
+def _http_error(status: int, reason: str):
+    import httplib2
+    from googleapiclient.errors import HttpError
+
+    content = json.dumps({"error": {"code": status, "message": f"Quota exceeded ({reason})",
+                                    "errors": [{"domain": "usageLimits", "reason": reason,
+                                                "message": f"Quota exceeded ({reason})"}]}}).encode("utf-8")
+    return HttpError(httplib2.Response({"status": status}), content, uri="https://gmail.example/messages")
+
+
+class FlakyRequest:
+    """Stands in for a googleapiclient request: raises the queued errors, then returns the payload."""
+
+    def __init__(self, errors, result):
+        self._errors, self._result, self.attempts = list(errors), result, 0
+
+    def execute(self):
+        self.attempts += 1
+        if self._errors:
+            raise self._errors.pop(0)
+        return self._result
+
+
+def test_execute_backs_off_on_rate_limit_then_succeeds(monkeypatch):
+    delays: list[float] = []
+    monkeypatch.setattr("jarvis.sources.gmail._sleep", delays.append)
+    req = FlakyRequest([_http_error(403, "rateLimitExceeded")] * 2, {"ok": 1})
+    assert GoogleGmailAPI._execute(req) == {"ok": 1}
+    assert delays == [2, 4] and req.attempts == 3
+
+
+def test_execute_gives_up_after_the_whole_schedule(monkeypatch):
+    from googleapiclient.errors import HttpError
+
+    delays: list[float] = []
+    monkeypatch.setattr("jarvis.sources.gmail._sleep", delays.append)
+    req = FlakyRequest([_http_error(429, "userRateLimitExceeded")] * 20, None)
+    with pytest.raises(HttpError):
+        GoogleGmailAPI._execute(req)
+    assert delays == [2, 4, 8, 16, 32, 60] and req.attempts == 7
+
+
+def test_execute_does_not_retry_a_403_for_another_reason(monkeypatch):
+    from googleapiclient.errors import HttpError
+
+    delays: list[float] = []
+    monkeypatch.setattr("jarvis.sources.gmail._sleep", delays.append)
+    req = FlakyRequest([_http_error(403, "insufficientPermissions")], {"ok": 1})
+    with pytest.raises(HttpError):
+        GoogleGmailAPI._execute(req)
+    assert delays == [] and req.attempts == 1
+
+
+def test_execute_retries_a_server_error(monkeypatch):
+    delays: list[float] = []
+    monkeypatch.setattr("jarvis.sources.gmail._sleep", delays.append)
+    req = FlakyRequest([_http_error(503, "backendError")], {"ok": 1})
+    assert GoogleGmailAPI._execute(req) == {"ok": 1}
+    assert delays == [2]
+
+
+def test_poll_stops_paging_when_the_consumer_stops(data_dir, store):
+    """list_ids is a generator: taking one id must not cost the second page."""
+    pages = []
+
+    class PagedAPI(FakeAPI):
+        def list_ids(self, query):
+            pages.append(1)
+            yield self.plain["id"]
+            pages.append(2)
+            yield self.html["id"]
+
+    src = GmailSource(PagedAPI(), store, account="a", query="q", max_attachment_bytes=25_000_000)
+    it = src.poll(datetime(2025, 9, 20, tzinfo=UTC))
+    next(it)
+    assert pages == [1]
+    it.close()

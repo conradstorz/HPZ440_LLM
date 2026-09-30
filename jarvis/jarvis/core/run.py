@@ -12,3 +12,4 @@ class RunSummary(BaseModel):
     drafted: int = 0
     errors: int = 0
     skipped: int = 0
+    capped: bool = False  # the per-run cap stopped polling; more messages are waiting for the next run

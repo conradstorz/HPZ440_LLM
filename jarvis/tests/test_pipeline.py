@@ -1,14 +1,17 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from jarvis.briefing import Briefing
 from jarvis.core.config import Settings
 from jarvis.core.llm import FakeLLM, LLMError
 from jarvis.core.nko import NKOStatus, effective_group
 from jarvis.journal import Journal, JournalEvent
-from jarvis.pipeline import MAX_ATTEMPTS, run_once
+from jarvis.pipeline import MAX_ATTEMPTS, PollError, run_once
 from jarvis.policy import Policy
 from jarvis.retrieval import Index
 from jarvis.sources.base import FakeSource
+from jarvis.sources.gmail import AuthRequired
 from tests.conftest import make_nko
 
 CLS = {"group": "reply_suggested", "topic": "t", "requested_action": "reply", "deadline": None, "priority": "normal", "reasoning": "r"}
@@ -104,3 +107,60 @@ def test_a_message_that_failed_five_times_is_skipped(data_dir, store):
     assert s.skipped == 1 and (s.classified, s.drafted, s.errors) == (0, 0, 0)
     assert llm.calls == []
     assert store.get_latest("gmail:a:0").version == 0
+
+
+class ExplodingSource:
+    """Yields real NKOs, then fails the way a quota wall does: from inside poll(), mid-iteration."""
+
+    name = "gmail"
+
+    def __init__(self, nkos, error):
+        self._nkos, self._error = list(nkos), error
+
+    def poll(self, since):
+        yield from self._nkos
+        raise self._error
+
+
+def test_messages_yielded_before_a_poll_failure_are_kept(data_dir, store):
+    deps = _deps(data_dir, store)
+    src = ExplodingSource([make_nko("gmail:a:0"), make_nko("gmail:a:1")], RuntimeError("quota"))
+    with pytest.raises(PollError) as e:
+        run_once(sources=[src], llm=FakeLLM([CLS, DRF, CLS, DRF]), **deps)
+    assert "gmail: RuntimeError: quota" in str(e.value)
+    assert isinstance(e.value.__cause__, RuntimeError)
+    # both messages made it all the way to v2 before the wall
+    assert [store.get_latest(f"gmail:a:{i}").version for i in (0, 1)] == [2, 2]
+    events = list(deps["journal"].iter_all())
+    poll_errors = [ev for ev in events if ev.kind == "error" and ev.payload["stage"] == "poll"]
+    assert len(poll_errors) == 1 and poll_errors[0].payload["source"] == "gmail"
+    assert "RuntimeError: quota" in poll_errors[0].payload["message"]
+    run = deps["journal"].last_run()
+    assert run is not None and run.payload["captured"] == 2 and run.payload["errors"] == 1
+
+
+def test_auth_required_on_the_first_poll_still_writes_a_run_event(data_dir, store):
+    deps = _deps(data_dir, store)
+    src = ExplodingSource([], AuthRequired("token.json not found"))
+    with pytest.raises(PollError) as e:
+        run_once(sources=[src], llm=FakeLLM([]), **deps)
+    assert "AuthRequired" in str(e.value) and isinstance(e.value.__cause__, AuthRequired)
+    run = deps["journal"].last_run()
+    assert run is not None and run.payload["captured"] == 0 and run.payload["errors"] == 1
+    poll_errors = [ev for ev in deps["journal"].iter_all() if ev.kind == "error"]
+    assert len(poll_errors) == 1 and poll_errors[0].dedup_key is None  # a poll error belongs to no message
+    assert poll_errors[0].payload["stage"] == "poll"
+
+
+def test_a_run_stops_at_the_cap_and_the_rest_wait_for_the_next_run(data_dir, store):
+    deps = _deps(data_dir, store)
+    deps["settings"] = Settings(data_dir=data_dir, max_messages_per_run=2)
+    src = FakeSource([make_nko(f"gmail:a:{i}", subject=f"S{i}") for i in range(3)])
+    s = run_once(sources=[src], llm=FakeLLM([CLS, DRF, CLS, DRF]), **deps)
+    assert (s.captured, s.classified, s.drafted) == (2, 2, 2) and s.capped is True
+    assert not store.exists("gmail:a:2")
+    assert deps["journal"].last_run().payload["capped"] is True
+    # the same source on the next run: the first two are skipped by store.exists(), the third is captured
+    s2 = run_once(sources=[src], llm=FakeLLM([CLS, DRF]), **deps)
+    assert (s2.captured, s2.classified, s2.drafted) == (1, 1, 1) and s2.capped is False
+    assert store.get_latest("gmail:a:2").version == 2

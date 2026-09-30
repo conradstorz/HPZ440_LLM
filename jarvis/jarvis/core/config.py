@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     gmail_query: str = "in:inbox"
     initial_lookback_days: int = 7
     max_attachment_bytes: int = 25_000_000
+    max_messages_per_run: int = 50
     content_chars: int = 6000
 
     @property

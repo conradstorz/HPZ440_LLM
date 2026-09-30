@@ -55,6 +55,7 @@ services:
       - JARVIS_LLM_MODEL=${LLM_MODEL_PATH:-/models/model.gguf}
       - JARVIS_GMAIL_ACCOUNT=${JARVIS_GMAIL_ACCOUNT:-}
       - JARVIS_GMAIL_QUERY=${JARVIS_GMAIL_QUERY:-in:inbox}
+      - JARVIS_MAX_MESSAGES_PER_RUN=${JARVIS_MAX_MESSAGES_PER_RUN:-50}
     volumes:
       - "${HOST_JARVIS_DATA_DIR:-/srv/llm/jarvis-data}:/data"
 

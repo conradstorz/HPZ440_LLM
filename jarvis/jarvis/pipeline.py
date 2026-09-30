@@ -23,6 +23,10 @@ OVERLAP = timedelta(hours=1)
 MAX_ATTEMPTS = 5
 
 
+class PollError(Exception):
+    """A source's poll() failed. Raised after the run event is written so nothing already captured is lost."""
+
+
 def _process(nko: NKO, *, llm: LLMClient, store: Store, journal: Journal, index: Index, policy: Policy,
              briefing: Briefing, settings: Settings, summary: RunSummary, stage: list[str],
              corrections_cache: dict[tuple[str, str], list[dict]]) -> None:
@@ -70,13 +74,10 @@ def run_once(*, sources: list[Source], llm: LLMClient, store: Store, journal: Jo
             summary.skipped += 1  # give up retrying; it stays in Unprocessed with its last error
             continue
         pending.append(nko)
-    for source in sources:
-        for nko in source.poll(since):
-            if nko.dedup_key not in seen:
-                seen.add(nko.dedup_key)
-                pending.append(nko)
     corrections_cache: dict[tuple[str, str], list[dict]] = {}
-    for nko in pending:
+
+    def handle(nko: NKO) -> None:
+        """Advance one message, isolating its failure. Never raises."""
         stage = ["capture"]
         try:
             _process(nko, llm=llm, store=store, journal=journal, index=index, policy=policy, briefing=briefing,
@@ -87,7 +88,38 @@ def run_once(*, sources: list[Source], llm: LLMClient, store: Store, journal: Jo
             journal.append(JournalEvent.new("error", nko_id=nko.id, dedup_key=nko.dedup_key,
                                             version=latest.version if latest else None,
                                             payload={"stage": stage[0], "message": f"{type(e).__name__}: {e}"[:1000]}))
+
+    for nko in pending:  # store-derived resumes first; they cost no API calls and do not count against the cap
+        handle(nko)
+    # Polled messages are processed as they arrive: every one is durable before the next is fetched, so a quota
+    # wall mid-poll costs at most the message in flight instead of the whole run.
+    failure: Exception | None = None
+    failed_source = ""
+    for source in sources:
+        if failure is not None or summary.capped:
+            break
+        polled = iter(source.poll(since))
+        while True:
+            if summary.captured >= settings.max_messages_per_run:
+                summary.capped = True  # leave the rest for the next run; the generator is abandoned unadvanced
+                break
+            try:
+                nko = next(polled)
+            except StopIteration:  # must precede the bare Exception arm: StopIteration is an Exception
+                break
+            except Exception as e:  # noqa: BLE001 - the source itself failed; stop polling but keep what we have
+                failure, failed_source = e, source.name
+                summary.errors += 1
+                journal.append(JournalEvent.new("error", payload={"stage": "poll", "source": source.name,
+                                                                  "message": f"{type(e).__name__}: {e}"[:1000]}))
+                break
+            if nko.dedup_key in seen:
+                continue
+            seen.add(nko.dedup_key)
+            handle(nko)
     journal.append(JournalEvent.new("run", payload={**summary.model_dump(mode="json")}))
+    if failure is not None:
+        raise PollError(f"{failed_source}: {type(failure).__name__}: {failure}") from failure
     return summary
 
 

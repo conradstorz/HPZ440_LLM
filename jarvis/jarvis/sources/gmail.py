@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import re
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from email.utils import getaddresses, parsedate_to_datetime
@@ -19,13 +21,56 @@ from jarvis.sources.htmltext import html_to_text
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
+logger = logging.getLogger(__name__)
+# Indirection so tests can replace the sleep without waiting out the real schedule.
+_sleep = time.sleep
+# Google's per-user "Units per minute" quota refills on a one-minute window, so the last wait covers a whole window.
+BACKOFF_SECONDS = (2, 4, 8, 16, 32, 60)
+RETRYABLE_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+
 
 class AuthRequired(Exception):
     pass
 
 
+def _error_reasons(e: Any) -> set[str]:
+    """Every ``reason`` Google put in the error, from error_details and from the raw JSON body."""
+    out: set[str] = set()
+
+    def collect(items: Any) -> None:
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and isinstance(item.get("reason"), str):
+                    out.add(item["reason"])
+
+    collect(getattr(e, "error_details", None))  # a str when Google sent only a message; collect() ignores it
+    content = getattr(e, "content", None)
+    if isinstance(content, bytes | bytearray):
+        try:
+            content = bytes(content).decode("utf-8")
+        except UnicodeDecodeError:
+            content = None
+    if isinstance(content, str):
+        try:
+            body = json.loads(content)
+        except ValueError:
+            body = None
+        err = body.get("error") if isinstance(body, dict) else None
+        if isinstance(err, dict):
+            collect(err.get("errors"))
+            collect(err.get("details"))
+    return out
+
+
+def _is_retryable(e: Any) -> bool:
+    status = int(getattr(getattr(e, "resp", None), "status", 0) or 0)
+    if 500 <= status < 600:
+        return True
+    return status in (403, 429) and bool(_error_reasons(e) & RETRYABLE_REASONS)
+
+
 class GmailAPI(Protocol):
-    def list_ids(self, query: str) -> list[str]: ...
+    def list_ids(self, query: str) -> Iterator[str]: ...
     def get_full(self, mid: str) -> dict: ...
     def get_raw(self, mid: str) -> bytes: ...
     def get_attachment(self, mid: str, attachment_id: str) -> bytes: ...
@@ -57,25 +102,42 @@ class GoogleGmailAPI:
                 raise AuthRequired("Gmail token is invalid and cannot be refreshed. Run scripts/jarvis-auth.ps1 again.")
         self._svc = build("gmail", "v1", credentials=creds, cache_discovery=False)
 
-    def list_ids(self, query: str) -> list[str]:
-        ids: list[str] = []
+    @staticmethod
+    def _execute(request: Any) -> Any:
+        """Run one Google API request, backing off on rate limits and 5xx. Any other error is raised at once."""
+        from googleapiclient.errors import HttpError
+
+        for delay in BACKOFF_SECONDS:
+            try:
+                return request.execute()
+            except HttpError as e:
+                if not _is_retryable(e):
+                    raise
+                logger.warning("Gmail API %s (%s); retrying in %ss",
+                               getattr(getattr(e, "resp", None), "status", "?"), sorted(_error_reasons(e)), delay)
+                _sleep(delay)
+        return request.execute()  # the schedule is spent; let this one's error reach the caller
+
+    def list_ids(self, query: str) -> Iterator[str]:
+        """Yield ids page by page so a consumer that stops early never pays for the next page."""
         token = None
         while True:
-            resp = self._svc.users().messages().list(userId="me", q=query, pageToken=token, maxResults=100).execute()
-            ids.extend(m["id"] for m in resp.get("messages", []))
+            resp = self._execute(self._svc.users().messages().list(userId="me", q=query, pageToken=token, maxResults=100))
+            for m in resp.get("messages", []):
+                yield m["id"]
             token = resp.get("nextPageToken")
             if not token:
-                return ids
+                return
 
     def get_full(self, mid: str) -> dict:
-        return self._svc.users().messages().get(userId="me", id=mid, format="full").execute()
+        return self._execute(self._svc.users().messages().get(userId="me", id=mid, format="full"))
 
     def get_raw(self, mid: str) -> bytes:
-        r = self._svc.users().messages().get(userId="me", id=mid, format="raw").execute()
+        r = self._execute(self._svc.users().messages().get(userId="me", id=mid, format="raw"))
         return _b64d(r["raw"])
 
     def get_attachment(self, mid: str, attachment_id: str) -> bytes:
-        r = self._svc.users().messages().attachments().get(userId="me", messageId=mid, id=attachment_id).execute()
+        r = self._execute(self._svc.users().messages().attachments().get(userId="me", messageId=mid, id=attachment_id))
         return _b64d(r["data"])
 
 

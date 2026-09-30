@@ -28,6 +28,7 @@ To revoke: remove the app at https://myaccount.google.com/permissions and delete
 ## Using it
 
 - `pwsh -NoProfile -File scripts/jarvis-run.ps1` triggers one pass and prints the archive count. The first pass looks back 7 days (`initial_lookback_days`); later passes start one hour before the previous run.
+- One run captures at most `JARVIS_MAX_MESSAGES_PER_RUN` (default 50) new messages and persists each one as it arrives, so an interrupted run keeps everything it had already archived; it backs off and retries when Google answers a rate-limit error, and running again continues from where it stopped.
 - Open `http://localhost:8090/` (or the HPZ440's LAN address). Four groups: Needs your decision, Reply suggested, For your information, Likely noise. Each card separates facts (from the message), evidence (links to earlier mail), inference (the model's classification and its reasoning), and the draft. An Unprocessed section at the bottom lists messages whose last stage failed, with the error; the next run retries them. After five `error` events a message is no longer retried and simply stays in Unprocessed. Clearing that counter is not supported: fix the cause, re-run, and if the message still needs processing delete its archive directory so the next poll re-captures it.
 - To correct a classification, pick a group in the card's form and submit. That writes a new version of the message with a `decisions` entry and a `correction` journal event; nothing else changes. Later classifications from the same sender or domain see your corrections as examples.
 - `/message/<key>` shows every version and journal event for one message.
@@ -45,7 +46,7 @@ To revoke: remove the app at https://myaccount.google.com/permissions and delete
 
 - The briefing's forms carry no CSRF token. Accepted: the service is LAN-only, unauthenticated by design, and never takes an outbound action.
 - Message text is fenced as untrusted data in the prompt, but the fence itself is not escaped. A hostile message can at worst mis-group itself or produce a draft that is displayed and never sent.
-- The first run drains the whole poll before classifying anything. For a large inbox set `JARVIS_GMAIL_QUERY=in:inbox newer_than:1d` for the first pass.
+- A large backlog is drained 50 messages per run, not all at once; trigger repeated runs, or raise `JARVIS_MAX_MESSAGES_PER_RUN`, to catch up. Gmail's per-user quota is the real ceiling.
 
 ## Tests
 
