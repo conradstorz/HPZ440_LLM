@@ -19,10 +19,13 @@ from jarvis.retrieval import Index
 from jarvis.sources.base import Source
 
 OVERLAP = timedelta(hours=1)
+# A message that has failed this many times is left alone so one poisoned message cannot burn every run.
+MAX_ATTEMPTS = 5
 
 
 def _process(nko: NKO, *, llm: LLMClient, store: Store, journal: Journal, index: Index, policy: Policy,
-             briefing: Briefing, settings: Settings, summary: RunSummary, stage: list[str]) -> None:
+             briefing: Briefing, settings: Settings, summary: RunSummary, stage: list[str],
+             corrections_cache: dict[tuple[str, str], list[dict]]) -> None:
     """Advance one message from whatever version it has to v2. Raises on the first failing stage."""
     stage[0] = "capture"
     if not store.exists(nko.dedup_key):
@@ -33,7 +36,10 @@ def _process(nko: NKO, *, llm: LLMClient, store: Store, journal: Journal, index:
         summary.captured += 1
     current = store.get_latest(nko.dedup_key)
     stage[0] = "classify"
-    corrections = briefing.corrections_for(sender_address(current), sender_domain(current))
+    cache_key = (sender_address(current), sender_domain(current))
+    if cache_key not in corrections_cache:
+        corrections_cache[cache_key] = briefing.corrections_for(*cache_key)
+    corrections = corrections_cache[cache_key]
     if not current.classifications:
         policy.check("search")
         evidence = index.search(f"{current.subject or ''} {sender_address(current)}", k=5, exclude=current.dedup_key)
@@ -57,19 +63,24 @@ def run_once(*, sources: list[Source], llm: LLMClient, store: Store, journal: Jo
     seen: set[str] = set()
     pending: list[NKO] = []
     for nko in [n for n in store.iter_latest() if not n.recommendations]:
-        if nko.dedup_key not in seen:
-            seen.add(nko.dedup_key)
-            pending.append(nko)
+        if nko.dedup_key in seen:
+            continue
+        seen.add(nko.dedup_key)
+        if journal.error_count_for(nko.dedup_key) >= MAX_ATTEMPTS:
+            summary.skipped += 1  # give up retrying; it stays in Unprocessed with its last error
+            continue
+        pending.append(nko)
     for source in sources:
         for nko in source.poll(since):
             if nko.dedup_key not in seen:
                 seen.add(nko.dedup_key)
                 pending.append(nko)
+    corrections_cache: dict[tuple[str, str], list[dict]] = {}
     for nko in pending:
         stage = ["capture"]
         try:
             _process(nko, llm=llm, store=store, journal=journal, index=index, policy=policy, briefing=briefing,
-                     settings=settings, summary=summary, stage=stage)
+                     settings=settings, summary=summary, stage=stage, corrections_cache=corrections_cache)
         except Exception as e:  # noqa: BLE001 - one message must never stop the run
             summary.errors += 1
             latest = store.get_latest(nko.dedup_key)

@@ -11,3 +11,4 @@ class RunSummary(BaseModel):
     classified: int = 0
     drafted: int = 0
     errors: int = 0
+    skipped: int = 0

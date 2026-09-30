@@ -5,7 +5,7 @@ from jarvis.core.config import Settings
 from jarvis.core.llm import FakeLLM, LLMError
 from jarvis.core.nko import NKOStatus, effective_group
 from jarvis.journal import Journal, JournalEvent
-from jarvis.pipeline import run_once
+from jarvis.pipeline import MAX_ATTEMPTS, run_once
 from jarvis.policy import Policy
 from jarvis.retrieval import Index
 from jarvis.sources.base import FakeSource
@@ -90,3 +90,17 @@ def test_pending_is_deduplicated_within_one_run(data_dir, store):
     s = run_once(sources=[FakeSource([n])], llm=llm, **deps)
     assert (s.classified, s.drafted, s.errors) == (1, 1, 0) and len(llm.calls) == 2
     assert sum(1 for e in deps["journal"].iter_all() if e.kind == "classify") == 1
+
+
+def test_a_message_that_failed_five_times_is_skipped(data_dir, store):
+    deps = _deps(data_dir, store)
+    n = make_nko("gmail:a:0")
+    store.save_version(n)
+    for _ in range(MAX_ATTEMPTS):
+        deps["journal"].append(JournalEvent.new("error", nko_id=n.id, dedup_key=n.dedup_key, version=0,
+                                                payload={"stage": "classify", "message": "LLMError: x"}))
+    llm = FakeLLM([])
+    s = run_once(sources=[FakeSource([])], llm=llm, **deps)
+    assert s.skipped == 1 and (s.classified, s.drafted, s.errors) == (0, 0, 0)
+    assert llm.calls == []
+    assert store.get_latest("gmail:a:0").version == 0

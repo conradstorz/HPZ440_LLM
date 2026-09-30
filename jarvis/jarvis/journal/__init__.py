@@ -67,6 +67,9 @@ class Journal:
     def events_for(self, dedup_key: str) -> list[JournalEvent]:
         return [e for e in self.iter_all() if e.dedup_key == dedup_key]
 
+    def error_count_for(self, dedup_key: str) -> int:
+        return sum(1 for e in self.iter_all() if e.kind == "error" and e.dedup_key == dedup_key)
+
     def last_run(self) -> JournalEvent | None:
         return self._last(lambda e: e.kind == "run")
 
