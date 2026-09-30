@@ -163,6 +163,7 @@ These run alongside phases rather than gating one.
 | Cloud usage budgets | Phase 4 | Per day and per request. |
 | Approval and rule-management interface | Phase 3 | Extends the briefing UI. |
 | Hardening timing | Security track | Before non-Conrad devices join the LAN. |
+| Deep immutability of NKO entries | Deferred | Sequence fields are tuples of plain dicts; nothing mutates them in place today and the process is single-writer. Revisit if a second writer or a mutation site appears (Copilot review on PR #4). |
 
 ## Non-goals (unchanged from the original design)
 
