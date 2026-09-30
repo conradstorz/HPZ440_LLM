@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Jarvis{% endblock %}</title>
+<style>
+  body { font: 15px/1.45 system-ui, sans-serif; margin: 0; padding: 1rem; max-width: 60rem; margin-inline: auto; color: #1a1a1a; background: #fafafa; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.15rem; margin-top: 2rem; border-bottom: 1px solid #ddd; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: .8rem 1rem; margin: .8rem 0; }
+  .facts { color: #333; } .evidence { background: #f3f7ff; padding: .5rem; border-left: 3px solid #5b8def; margin: .5rem 0; }
+  .inference { background: #fff8e6; padding: .5rem; border-left: 3px solid #e0a800; margin: .5rem 0; }
+  .draft { background: #f2fff2; padding: .5rem; border-left: 3px solid #3c9; margin: .5rem 0; white-space: pre-wrap; }
+  .error { background: #fff0f0; border-left: 3px solid #d33; padding: .5rem; }
+  .label { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: #666; }
+  form.inline { display: inline; } select, input[type=text] { font: inherit; } button { font: inherit; cursor: pointer; }
+  .meta { color: #666; font-size: .85rem; } pre { white-space: pre-wrap; background: #f4f4f4; padding: .5rem; }
+</style>
+</head>
+<body>
+<header><h1><a href="/" style="text-decoration:none;color:inherit">Jarvis briefing</a></h1>
+<form method="post" action="/run" class="inline"><button type="submit">Run now</button></form>
+<span class="meta">Read-only. Nothing here is sent or changed in Gmail.</span></header>
+{% block body %}{% endblock %}
+</body>
+</html>

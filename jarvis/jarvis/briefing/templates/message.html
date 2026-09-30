@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}{{ nko.subject }} · Jarvis{% endblock %}
+{% block body %}
+<h2>{{ nko.subject }}</h2>
+<p class="meta">{{ nko.dedup_key }} · from {{ sender_address(nko) }} · received {{ nko.received_at.isoformat() }}
+{% if nko.source_url %}· <a href="{{ nko.source_url }}">open in Gmail</a>{% endif %}</p>
+<h3>Content</h3><pre>{{ nko.content }}</pre>
+{% if nko.attachments %}<h3>Attachments</h3><ul>{% for a in nko.attachments %}<li>{{ a.filename }} ({{ a.mime }}, {{ a.size }} bytes){% if a.path is none %} — skipped: {{ a.skipped_reason }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+<h3>Versions</h3>
+{% for v in versions %}
+<div class="card"><strong>Version {{ v.version }}</strong> · {{ v.status }}
+  {% if v.classifications %}<div class="inference">{{ v.classifications[0] }}</div>{% endif %}
+  {% if v.recommendations %}<div class="draft">{{ v.recommendations[0] }}</div>{% endif %}
+  {% if v.decisions %}<div class="meta">Decisions: {{ v.decisions }}</div>{% endif %}
+</div>
+{% endfor %}
+<h3>Journal</h3>
+<ul>{% for e in events %}<li><code>{{ e.ts.isoformat() }}</code> <strong>{{ e.kind }}</strong>{% if e.version is not none %} v{{ e.version }}{% endif %} {{ e.payload }}</li>{% endfor %}</ul>
+{% endblock %}
