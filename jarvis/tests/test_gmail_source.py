@@ -92,3 +92,23 @@ def test_missing_token_raises_auth_required(tmp_path: Path):
     with pytest.raises(AuthRequired) as e:
         GoogleGmailAPI(tmp_path / "token.json")
     assert "jarvis-auth.ps1" in str(e.value)
+
+
+def test_token_with_extra_scope_is_refused(tmp_path: Path):
+    import json
+    token = tmp_path / "token.json"
+    token.write_text(json.dumps({
+        "token": "x", "refresh_token": "y", "client_id": "c", "client_secret": "s",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "scopes": ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.modify"],
+    }), encoding="utf-8")
+    with pytest.raises(AuthRequired) as e:
+        GoogleGmailAPI(token)
+    assert "beyond read-only" in str(e.value) and "jarvis-auth.ps1" in str(e.value)
+
+
+def test_unreadable_token_is_auth_required(tmp_path: Path):
+    token = tmp_path / "token.json"
+    token.write_text("{not json", encoding="utf-8")
+    with pytest.raises(AuthRequired):
+        GoogleGmailAPI(token)

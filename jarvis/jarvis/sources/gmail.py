@@ -38,7 +38,16 @@ class GoogleGmailAPI:
 
         if not Path(token_path).exists():
             raise AuthRequired(f"{token_path} not found. Run scripts/jarvis-auth.ps1 on the workstation first.")
-        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        import json
+
+        try:
+            info = json.loads(Path(token_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise AuthRequired(f"{token_path} is unreadable ({e}). Run scripts/jarvis-auth.ps1 again.") from e
+        granted = set(info.get("scopes") or [])
+        if granted - set(SCOPES):
+            raise AuthRequired(f"{token_path} carries scopes beyond read-only: {sorted(granted)}. Refusing to run. Delete it and run scripts/jarvis-auth.ps1 again.")
+        creds = Credentials.from_authorized_user_info(info, SCOPES)
         if not creds.valid:
             if creds.expired and creds.refresh_token:
                 try:
@@ -47,8 +56,6 @@ class GoogleGmailAPI:
                     raise AuthRequired(f"Gmail token refresh failed ({e}). Run scripts/jarvis-auth.ps1 again.") from e
             else:
                 raise AuthRequired("Gmail token is invalid and cannot be refreshed. Run scripts/jarvis-auth.ps1 again.")
-        if set(creds.scopes or []) - set(SCOPES):
-            raise AuthRequired(f"token carries scopes beyond read-only: {creds.scopes}. Refusing to run.")
         self._svc = build("gmail", "v1", credentials=creds, cache_discovery=False)
 
     def list_ids(self, query: str) -> list[str]:
@@ -137,6 +144,10 @@ def _participants(h: dict[str, str]) -> list[dict]:
     return out
 
 
+def _dedup_key(account: str, mid: str) -> str:
+    return f"gmail:{account}:{mid}"
+
+
 def normalize(payload: dict, raw: bytes, *, account: str, attachments: list[dict]) -> NKO:
     h = _headers(payload)
     mid = payload["id"]
@@ -147,7 +158,7 @@ def normalize(payload: dict, raw: bytes, *, account: str, attachments: list[dict
         occurred = None
     return NKO.new(
         knowledge_type=KnowledgeType.EMAIL, source_system="gmail", source_account=account, source_identifier=mid,
-        source_url=f"https://mail.google.com/mail/u/0/#all/{mid}", dedup_key=f"gmail:{account}:{mid}",
+        source_url=f"https://mail.google.com/mail/u/0/#all/{mid}", dedup_key=_dedup_key(account, mid),
         occurred_at=occurred, received_at=received, participants=_participants(h),
         subject=h.get("subject", "") or "(no subject)", content=_body_text(payload) or None,
         attachments=attachments,
@@ -169,7 +180,7 @@ class GmailSource:
     def poll(self, since: datetime) -> Iterator[NKO]:
         query = f"{self._query} after:{since.astimezone(UTC).strftime('%Y/%m/%d')}"
         for mid in self._api.list_ids(query):
-            key = f"gmail:{self._account}:{mid}"
+            key = _dedup_key(self._account, mid)
             if self._store.exists(key):
                 continue
             payload = self._api.get_full(mid)
