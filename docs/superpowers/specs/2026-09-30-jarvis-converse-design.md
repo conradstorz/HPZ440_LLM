@@ -1,7 +1,7 @@
 # Jarvis Phase 1.5: Converse Design
 
 Status: Approved
-Updated: 2026-09-30
+Updated: 2026-09-30. Amended 2026-09-30: explicit notes require the current user message to contain remember/rule/always/never; model intent alone yields pending.
 Roadmap phase: new Phase 1.5 between Observe and Propose (added to `docs/roadmap.md` by this work)
 
 ## Purpose
@@ -25,7 +25,7 @@ The permission stage stays 1 (Observe). Nothing is sent, nothing on the internet
 | Purpose | General assistant with mail, documents, and teaching | Conrad's choice. |
 | Surface | Open WebUI, with Jarvis exposed as an OpenAI-compatible model | Chat UI, streaming, and history for free; Jarvis keeps all logic, policy, and audit. |
 | Loop location | Server-side in Jarvis (not Open WebUI tools or pipelines) | Every tool call passes the policy gate and is journaled. |
-| Teaching | Jarvis proposes, Conrad confirms; explicit "remember" saves at once | Matches "rules negotiated one at a time". |
+| Teaching | Jarvis proposes, Conrad confirms; explicit "remember" saves at once | Matches "rules negotiated one at a time". Whether a turn may save an explicit note is decided by the agent from Conrad's own message, never by the model's `explicit` argument, so text inside a mail body or document cannot install a rule. |
 | Conversation memory | Open WebUI holds transcripts; Jarvis is stateless per request except notes and journal | Avoids a second transcript store; Open WebUI resends the full transcript each turn. |
 | Web search / cloud escalation | Out of scope | Both are outbound; Phase 4 territory. |
 | Documents | On-demand read via GTE agent, not archived or indexed | Keeps the deferred `Source` polling deferred; smallest useful step. |
@@ -123,7 +123,7 @@ Tools registered in Phase 1.5:
 | `briefing` | `group: str \| null` | `read` | Compact text of the current briefing, optionally one group; counts per group first. |
 | `correct` | `dedup_key`, `to_group`, `note: str \| null` | `correct` | Calls `Briefing.apply_correction`; returns the new version number. |
 | `list_notes` | none | `notes_read` | Active and pending notes, numbered, with ids. |
-| `propose_note` | `text`, `applies_to`, `explicit: bool` | `notes_write` | Explicit → saved active, returns id. Proposed → saved pending, returns id and the instruction to ask the user "Save this note? (yes/no)". |
+| `propose_note` | `text`, `applies_to`, `explicit: bool` (optional; not in `required`) | `notes_write` | Explicit → saved active, returns id. Proposed → saved pending, returns id and the instruction to ask the user "Save this note? (yes/no)". `explicit` is honoured only when the agent's `_context` says the current user message itself contained remember/rule/from now on/always/never; otherwise the note is pending whatever the model asked for. |
 | `confirm_note` | `note_id` | `notes_write` | Pending → active. |
 | `retire_note` | `note_id`, `reason` | `notes_write` | → retired. |
 | `list_documents` | `glob: str = "*"` | `documents_read` | One line per match: `sha256[:12] | folder | name | size | mtime`. |

@@ -117,14 +117,14 @@ What it adds:
 - `jarvis/sources/workspace`: a client for GTE's passive workspace agent on the workstation (`JARVIS_WORKSPACE_AGENT_URL`, bearer token at `/data/secrets/agent_token`, copied there by `scripts/jarvis-agent-token.ps1`). Jarvis always initiates; the agent never calls in. Nothing read this way is archived.
 - A `/notes` page on the briefing UI listing notes by status with a retire control.
 
-Permission stage is unchanged at 1 to 2: `jarvis/policy` gains only `notes_read`, `notes_write`, `correct`, and `documents_read`. No send, no modify, no internet, no cloud.
+Permission stage is unchanged at 1: `jarvis/policy` gains only `notes_read`, `notes_write`, `correct`, and `documents_read`. No send, no modify, no internet, no cloud.
 
 Exit criteria:
 
 - A question about mail is answered in Open WebUI from the archive, citing a message key that really exists.
 - One explicit note and one proposed-then-confirmed note are visible on `/notes` as active, and both appear in the next run's classify prompt.
 - One document on the workstation is listed and read through the workspace agent.
-- No `policy_reject` event for an outbound tool: the registry never exposes one, and the gate refuses it if a model invents one.
+- No outbound tool is reachable from chat: the registry never exposes one, and the gate journals a `policy_reject` if a model invents a tool or a tool's action is not allowed.
 
 Decisions this phase resolves: chat transport (OpenAI-compatible endpoint inside the existing service, not a second container); how teaching is stored (versioned notes beside the archive, not prompt-file edits); whether workstation documents are archived (no, read on demand).
 

@@ -200,7 +200,8 @@ def build_runtime(settings: Settings | None = None, *, with_gmail: bool = True) 
     tools = build_registry(policy, journal, store=store, index=index, briefing=briefing, notes=notes,
                            workspace=workspace, content_chars=s.content_chars)
     rt = Runtime(settings=s, store=store, journal=journal, policy=policy, index=index, briefing=briefing, llm=llm,
-                 notes=notes, workspace=workspace, tools=tools, agent=Agent(llm, tools, notes, journal))
+                 notes=notes, workspace=workspace, tools=tools,
+                 agent=Agent(llm, tools, notes, journal, context_tokens=s.context_tokens))
     if with_gmail:
         rt.sources.append(_LazyGmail(s, store))
     return rt

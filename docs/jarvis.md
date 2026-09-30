@@ -52,6 +52,19 @@ tools used, characters in and out).
 What it cannot do: send, forward, label, archive, or delete mail; reach the internet; call a cloud model. The policy
 gate refuses those actions in code, not by prompt, and the reply says so plainly if you ask.
 
+`JARVIS_CONTEXT_TOKENS` is the context the agent budgets for (system prompt, transcript, tool results and tool
+schemas, leaving room for the reply); `compose.yaml` feeds it and llama.cpp's `--ctx-size` from the same
+`LLM_CONTEXT_SIZE`, so raising one raises both. A turn also stops after 90 seconds or six tool steps and answers
+with what it has.
+
+Two operator settings in Open WebUI matter:
+
+- Set the **Task Model** (Admin → Settings → Interface) to the raw llama.cpp model. Left on `jarvis`, every chat
+  title and tag generation runs a second full Jarvis loop, with its own tool calls and journal events.
+- On an existing Open WebUI volume the persisted connection list wins over `OPENAI_API_BASE_URLS`. If `jarvis` is
+  missing from the model list, add the connection `http://jarvis:8090/v1` (any key) in Admin → Settings →
+  Connections.
+
 ### Teaching it
 
 Say "remember: invoices from Acme are always mine" and the note is saved active at once. State a preference any other
@@ -86,7 +99,9 @@ The token is read from disk on each request, not at startup, so the service star
 ## Guarantees enforced in code
 
 - The OAuth token is requested with `gmail.readonly` only, and the client refuses to start if the stored token carries any other scope.
-- `jarvis/policy` allows exactly `read, archive_copy, classify, search, suggest, draft`. Model output is filtered: any `tool_calls`, `function_call`, `send`, `forward`, `delete`, `label`, `modify`, or `action` key is dropped and journaled as `policy_reject`.
+- `jarvis/policy` allows exactly ten actions: `read`, `archive_copy`, `classify`, `search`, `suggest`, `draft`, `correct`, `notes_read`, `notes_write`, `documents_read`. Chat can reach `correct`, `notes_write`, and `documents_read` as well as the read-only ones, so a conversation can reclassify a message, save or retire a note, and read a workstation file — and nothing else. Every tool call is gated before it runs: an unknown tool name, non-JSON arguments, or an action outside that list is journaled as `policy_reject` and never executed. Allowed calls are journaled as `tool_call` with the arguments the model sent, whether the call succeeded, and the first 200 characters of the result.
+- Model output is filtered too: any `tool_calls`, `function_call`, `send`, `forward`, `delete`, `label`, `modify`, or `action` key in a classification or draft is dropped and journaled as `policy_reject`.
+- A note is saved active only when your own message in that turn contains remember, rule, from now on, always, or never. A model that asks for an explicit note without those words — including one talked into it by text inside a message or a document — gets a pending note that reaches no prompt until you say yes.
 - Message bodies are passed to the model as untrusted data; the system prompt says so, and the policy filter applies regardless.
 - Versions are written atomically and never overwritten.
 

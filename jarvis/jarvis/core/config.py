@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     max_attachment_bytes: int = 25_000_000
     max_messages_per_run: int = 50
     content_chars: int = 6000
+    # Must match llama.cpp's --ctx-size; compose feeds both from LLM_CONTEXT_SIZE so they cannot diverge.
+    context_tokens: int = 8192
     workspace_agent_url: str = ""
 
     @property
