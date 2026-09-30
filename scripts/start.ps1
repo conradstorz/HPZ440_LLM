@@ -23,7 +23,7 @@ $CheckContextScript = Join-Path $Root 'scripts/check-context.ps1'
 & $CheckContextScript -Context $Context
 Push-Location $Root
 try {
-    docker --context $Context compose --env-file .env up -d
+    docker --context $Context compose --env-file .env up -d --build
 } finally {
     Pop-Location
 }

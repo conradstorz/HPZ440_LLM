@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block body %}
+<p class="meta">{{ total }} messages archived.</p>
+{% for g in GROUPS %}
+<h2>{{ GROUP_TITLES[g] }} ({{ groups[g]|length }})</h2>
+{% for n in groups[g] %}
+{% set c = n.classifications[0] if n.classifications else {} %}
+{% set r = n.recommendations[0] if n.recommendations else none %}
+<div class="card">
+  <div class="facts"><span class="label">Facts</span><br>
+    <strong><a href="/message/{{ n.dedup_key }}">{{ n.subject }}</a></strong><br>
+    From {{ sender_address(n) }} · {{ n.received_at.strftime('%Y-%m-%d %H:%M') }}
+    {% if n.attachments %}· {{ n.attachments|length }} attachment(s){% endif %}
+  </div>
+  {% if n.observations %}<div class="evidence"><span class="label">Evidence</span>
+    <ul>{% for e in n.observations %}<li><a href="/message/{{ e.dedup_key }}">{{ e.subject }}</a>: {{ e.snippet }}</li>{% endfor %}</ul></div>{% endif %}
+  <div class="inference"><span class="label">Inference</span><br>
+    Topic: {{ c.topic }} · Priority: {{ c.priority }}{% if c.requested_action %} · Action: {{ c.requested_action }}{% endif %}{% if c.deadline %} · Deadline: {{ c.deadline }}{% endif %}<br>
+    <em>{{ c.reasoning }}</em>
+    {% if n.decisions %}<br><span class="meta">Corrected: {{ n.decisions[-1].from_group }} → {{ n.decisions[-1].to_group }}{% if n.decisions[-1].note %} ({{ n.decisions[-1].note }}){% endif %}</span>{% endif %}
+  </div>
+  {% if r %}<div class="draft"><span class="label">Draft (not sent)</span><br>{% if r.reply_text %}{{ r.reply_text }}{% else %}<em>No reply suggested.</em>{% endif %}
+    <br><span class="meta">Proposed action: {{ r.proposed_action }} — {{ r.rationale }}</span></div>{% endif %}
+  <form method="post" action="/correct" class="inline">
+    <input type="hidden" name="dedup_key" value="{{ n.dedup_key }}">
+    <label>Move to <select name="to_group">{% for og in GROUPS %}<option value="{{ og }}" {% if og == g %}selected{% endif %}>{{ GROUP_TITLES[og] }}</option>{% endfor %}</select></label>
+    <input type="text" name="note" placeholder="why (optional)" size="30">
+    <button type="submit">Correct</button>
+  </form>
+</div>
+{% else %}<p class="meta">Nothing here.</p>{% endfor %}
+{% endfor %}
+{% if unprocessed %}
+<h2>Unprocessed ({{ unprocessed|length }})</h2>
+{% for n, e in unprocessed %}
+<div class="card"><strong><a href="/message/{{ n.dedup_key }}">{{ n.subject }}</a></strong> · {{ sender_address(n) }}
+  {% if e %}<div class="error">{{ e.payload.stage }}: {{ e.payload.message }}</div>{% else %}<div class="meta">Not yet classified.</div>{% endif %}</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

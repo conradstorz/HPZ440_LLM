@@ -1,7 +1,7 @@
 # Roadmap: From HPZ440 Local LLM to Jarvis
 
 Status: Approved roadmap
-Updated: 2026-09-23
+Updated: 2026-09-30
 
 This repository started as an operations stack for serving a 7B GGUF model on the HPZ440 (`compose.yaml`, `scripts/*.ps1`). It will grow into the Jarvis home assistant described in `JARVIS_Home_Assistant_Reference.md`. This document reconciles the two: what exists today, what Jarvis needs, and the order in which the gap closes.
 
@@ -31,10 +31,10 @@ Mapping to the Jarvis logical components:
 | Jarvis component | Status in this repo |
 | --- | --- |
 | Local inference service | Exists (`llm-api`). Validated on hardware 2026-09-29. |
-| User interface | Open WebUI exists as a raw chat surface only. No briefing, approvals, or rule UI. |
-| Jarvis application | Absent. |
-| Mail connector | Absent. |
-| Retrieval service | Absent. |
+| User interface | Open WebUI for raw chat. Jarvis briefing UI at `JARVIS_HOST_PORT` (Phase 1). |
+| Jarvis application | `jarvis` container (Phase 1): pipeline, policy, journal, briefing. |
+| Mail connector | `jarvis/sources/gmail.py`, read-only scope (Phase 1). |
+| Retrieval service | `jarvis/retrieval`, SQLite FTS5 over the archive (Phase 1). |
 | Cloud gateway | Absent. |
 | NAS archive | Absent. |
 
@@ -62,6 +62,8 @@ Decisions this phase resolves: model file and quantization; acceptable latency f
 
 ## Phase 1: Observe (read-only inbox briefing)
 
+Phase 1 status: implemented 2026-09-30 per `docs/superpowers/specs/2026-09-30-jarvis-phase-1-observe-design.md`. The `draft` unit from Phase 2 was pulled forward because it is local and read-only. The data model is GTE's Normalized Knowledge Object (immutable, versioned) rather than the separate per-unit records sketched below; the unit table stands as the map of responsibilities. First live run 2026-09-30: 120 messages, all four groups populated, 2.6 s median per message; details under `## First live run` in `docs/jarvis.md`. Context size decision resolved: 8192.
+
 Goal: Jarvis reads new Gmail, stores a local archive copy under `/data/archive/` (the Gmail mailbox itself is never modified; messages stay in the inbox), classifies it, searches prior records, and presents a briefing. It takes no outbound action. This is the Jarvis document's first milestone and permission stage 1.
 
 Architecture added to `compose.yaml`:
@@ -78,7 +80,7 @@ Internal units, each independently testable:
 | `classify` | Given a captured message plus retrieved evidence, ask `llm-api` for sender, topic, requested action, deadline, priority, and one of four groups: Needs your decision, Reply suggested, For your information, Likely noise. Output is structured JSON validated in code. | `llm-api`, `retrieval` |
 | `retrieval` | SQLite full-text index over archived mail and documents, rebuildable from `/data/archive/`. Returns source-linked evidence. | filesystem |
 | `briefing` | Renders the grouped briefing with evidence separated from inference, a suggested reply where relevant, and a one-click correction control that writes to `journal`. | `classify`, `retrieval`, `journal` |
-| `policy` | The permission gate. In Phase 1 it allows only read, copy to the local archive, classify, search, suggest. Any outbound tool call is rejected in code, not by prompt. | none |
+| `policy` | The permission gate. In Phase 1 it allows only read, copy to the local archive, classify, search, suggest, draft. Any outbound tool call is rejected in code, not by prompt. | none |
 
 Rules enforced in code, not in prompts:
 
@@ -86,7 +88,7 @@ Rules enforced in code, not in prompts:
 - The Gmail credential is granted read-only scope. Send scope is not requested until Phase 3.
 - The archive is source of truth; the index can be deleted and rebuilt at any time.
 
-Operator surface additions: `scripts/jarvis-briefing.ps1` (trigger a run, print summary) and `scripts/jarvis-reindex.ps1`. Both follow the existing `.env` parsing convention.
+Operator surface additions: `scripts/jarvis-run.ps1` (trigger a run, print summary) and `scripts/jarvis-reindex.ps1`. Both follow the existing `.env` parsing convention.
 
 Testing: unit tests under `jarvis/tests/` (`uv run pytest`) for `journal` append and replay, `retrieval` rebuild, `classify` JSON validation with a stubbed LLM, and `policy` rejecting outbound calls. The existing PowerShell literal-content tests gain assertions for the new compose service, env keys, and scripts.
 
@@ -105,7 +107,7 @@ Goal: permission stage 2. Jarvis prepares reply drafts and proposed actions (Gma
 
 In scope:
 
-- `draft` unit: produces reply text and a proposed action per message, stored with the message and shown in the briefing.
+- `draft` unit: delivered in Phase 1. Phase 2 work is quality review of its output, not construction.
 - Correction loop: past corrections from the journal are retrieved as few-shot evidence for `classify` and `draft`.
 - Quality gate: a `docs/quality.md` log of weekly review sessions recording classification accuracy against Conrad's corrections. Phase 3 does not start until accuracy is judged dependable in that log.
 
@@ -161,6 +163,7 @@ These run alongside phases rather than gating one.
 | Cloud usage budgets | Phase 4 | Per day and per request. |
 | Approval and rule-management interface | Phase 3 | Extends the briefing UI. |
 | Hardening timing | Security track | Before non-Conrad devices join the LAN. |
+| Deep immutability of NKO entries | Deferred | Sequence fields are tuples of plain dicts; nothing mutates them in place today and the process is single-writer. Revisit if a second writer or a mutation site appears (Copilot review on PR #4). |
 
 ## Non-goals (unchanged from the original design)
 

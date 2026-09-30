@@ -7,6 +7,8 @@
 *.crt
 *.pfx
 secrets/
+token.json
+credentials.json
 
 # Model weights and ML artifacts
 models/*
@@ -21,6 +23,7 @@ models/*
 tokenizer.json
 tokenizer.model
 special_tokens_map.json
+!jarvis/tests/fixtures/*.bin
 
 # Runtime data
 data/
@@ -29,11 +32,13 @@ jarvis-data/
 benchmarks/
 logs/
 *.log
+*.sqlite
 
 # Local caches
 .cache/
 .pytest_cache/
 __pycache__/
+.venv/
 
 # OS/editor noise
 .DS_Store

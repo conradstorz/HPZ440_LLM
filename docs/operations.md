@@ -39,7 +39,7 @@ Run `pwsh -NoProfile -File scripts/stop.ps1`.
 `scripts/health.ps1` and `scripts/benchmark.ps1` call `http://localhost:<port>`, which assumes the HPZ440's published ports are forwarded to the workstation. Open a tunnel in a second terminal and leave it running:
 
 ```powershell
-ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 gte@hpz440
+ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 -L 8090:localhost:8090 gte@hpz440
 ```
 
 Adjust the ports if `.env` changes `LLM_HOST_PORT` or `WEBUI_HOST_PORT`. LAN clients reach the services directly at the HPZ440 hostname or IP instead.

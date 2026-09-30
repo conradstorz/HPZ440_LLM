@@ -26,5 +26,6 @@ Filled in from `scripts/benchmark.ps1` output (`generated_tokens_per_second`) on
 | Model | Quantization | Context | Generated tok/s | Date | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Qwen2.5-7B-Instruct | Q4_K_M | 4096 | 56.4 | 2026-09-29 | Prompt 186.9 tok/s, 4.7 GB VRAM used, 128 max tokens. `benchmarks/benchmark-20260929-202137.json`. |
+| Qwen2.5-7B-Instruct | Q4_K_M | 8192 | 61.9 | 2026-09-30 | Prompt 851 tok/s, 128 max tokens. Jarvis triage: 2.6 s/message median (capture to draft). `benchmarks/benchmark-20260930-131153.json`. |
 
-Triage target for Phase 1: one email classified in under 10 seconds. If measured throughput allows, raise `LLM_CONTEXT_SIZE` to 8192 in `.env` and add a row here.
+Triage target for Phase 1: one email classified in under 10 seconds. Met on 2026-09-30 (2.6 s median). `LLM_CONTEXT_SIZE=8192` is the working value for Jarvis, and `.env.example` now ships 8192; the `compose.yaml` fallback stays 4096 for stacks brought up without a `.env`.

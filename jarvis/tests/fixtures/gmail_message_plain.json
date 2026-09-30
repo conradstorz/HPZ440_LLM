@@ -1,0 +1,35 @@
+{
+  "id": "18f1a2b3c4d5e6f7",
+  "threadId": "18f1a2b3c4d5e6f7",
+  "internalDate": "1759190400000",
+  "snippet": "Can you approve the invoice by Friday?",
+  "payload": {
+    "mimeType": "text/plain",
+    "headers": [
+      {
+        "name": "From",
+        "value": "Alice Example <alice@example.com>"
+      },
+      {
+        "name": "To",
+        "value": "Conrad <conradstorz@gmail.com>"
+      },
+      {
+        "name": "Subject",
+        "value": "Invoice approval needed"
+      },
+      {
+        "name": "Date",
+        "value": "Mon, 29 Sep 2025 20:00:00 +0000"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<abc123@example.com>"
+      }
+    ],
+    "body": {
+      "size": 65,
+      "data": "SGkgQ29ucmFkLAoKQ2FuIHlvdSBhcHByb3ZlIHRoZSBpbnZvaWNlIGJ5IEZyaWRheT8KClRoYW5rcywKQWxpY2U"
+    }
+  }
+}
