@@ -12,7 +12,7 @@ This stack is the "local inference service" piece of the larger Jarvis home-assi
 
 ```powershell
 pwsh -NoProfile -File scripts/check-context.ps1 -Context hpz440   # verify remote docker context reachable
-pwsh -NoProfile -File scripts/start.ps1                            # docker --context hpz440 compose up -d (runs check-context first)
+pwsh -NoProfile -File scripts/start.ps1                            # docker --context hpz440 compose up -d --build (runs check-context first; rebuilds jarvis when its source changed)
 pwsh -NoProfile -File scripts/stop.ps1
 pwsh -NoProfile -File scripts/health.ps1                           # GET /v1/models + WebUI root + jarvis /health
 pwsh -NoProfile -File scripts/switch-model.ps1 -ModelPath /models/name.gguf   # rewrites .env only; re-run start.ps1 to apply
