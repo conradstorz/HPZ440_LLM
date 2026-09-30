@@ -34,6 +34,27 @@ def test_llama_client_raises_on_http_error():
         c.complete_json("s", "u", {})
 
 
+def test_llama_client_http_status_error_includes_response_body():
+    def handler(req):
+        return httpx.Response(400, json={"error": {"message": "prompt too long"}})
+    c = LlamaCppClient("http://llm", "m", transport=_transport(handler))
+    with pytest.raises(LLMError) as exc_info:
+        c.complete_json("s", "u", {})
+    assert "HTTP 400" in str(exc_info.value)
+    assert "prompt too long" in str(exc_info.value)
+
+
+def test_llama_client_raises_on_truncated_output():
+    def handler(req):
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "length", "message": {"content": '{"group": "fyi"'}}]}
+        )
+    c = LlamaCppClient("http://llm", "m", transport=_transport(handler))
+    with pytest.raises(LLMError) as exc_info:
+        c.complete_json("s", "u", {})
+    assert "truncated" in str(exc_info.value)
+
+
 def test_fake_llm_queue():
     f = FakeLLM([{"a": 1}, LLMError("x")])
     assert f.complete_json("s", "u", {}) == {"a": 1}

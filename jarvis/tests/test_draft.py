@@ -55,3 +55,14 @@ def test_retry_and_failure(deps):
 def test_entry_validation():
     with pytest.raises(ValidationError):
         DraftEntry(reply_text=None, proposed_action="forward", rationale="x")
+
+
+def test_reply_text_is_truncated_to_schema_limit(deps):
+    llm = FakeLLM([{**GOOD, "reply_text": "x" * 5000}])
+    v2 = draft(classified(make_nko()), [], llm, **deps)
+    assert len(v2.recommendations[0]["reply_text"]) == 2000
+
+
+def test_schema_bounds_reply_text_length():
+    string_branch = next(b for b in DRAFT_SCHEMA["properties"]["reply_text"]["anyOf"] if b.get("type") == "string")
+    assert string_branch["maxLength"] == 2000

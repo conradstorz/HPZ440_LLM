@@ -92,6 +92,17 @@ def test_iso_deadline_survives(raw, expected):
     assert e.deadline == (date.fromisoformat(expected) if expected else None)
 
 
+def test_reasoning_is_truncated_to_schema_limit(deps):
+    llm = FakeLLM([{**GOOD, "reasoning": "x" * 2000}])
+    v1 = classify(make_nko(), [], [], llm, **deps)
+    assert len(v1.classifications[0]["reasoning"]) == 500
+    assert len(llm.calls) == 1
+
+
+def test_schema_bounds_reasoning_length():
+    assert CLASSIFICATION_SCHEMA["properties"]["reasoning"]["maxLength"] == 500
+
+
 def test_schema_constrains_deadline_pattern():
     deadline_schema = CLASSIFICATION_SCHEMA["properties"]["deadline"]
     string_branch = next(b for b in deadline_schema["anyOf"] if b.get("type") == "string")

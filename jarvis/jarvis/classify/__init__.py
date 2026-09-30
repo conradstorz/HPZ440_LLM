@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from jarvis.core.llm import LLMClient, LLMError
 from jarvis.core.nko import GROUPS, PRIORITIES, NKO, Evidence, NKOStatus, sender_address, utcnow
@@ -22,17 +22,24 @@ SYSTEM_PROMPT = (
     "to two sentences.\n\nGroups: needs_decision (the recipient must decide or approve something), "
     "reply_suggested (a short reply is expected), fyi (informational, no action), likely_noise (marketing, "
     "automated notices, newsletters the recipient has not engaged with). deadline must be an ISO date "
-    "(YYYY-MM-DD) or null; never describe a deadline in words."
+    "(YYYY-MM-DD) or null; never describe a deadline in words. Keep every string short; reasoning and "
+    "rationale are at most two sentences."
 )
+
+
+def _truncate(v: object, limit: int) -> object:
+    if isinstance(v, str) and len(v) > limit:
+        return v[:limit]
+    return v
 
 
 class ClassificationEntry(BaseModel):
     group: Literal["needs_decision", "reply_suggested", "fyi", "likely_noise"]
-    topic: str
-    requested_action: str | None = None
+    topic: str = Field(max_length=120)
+    requested_action: str | None = Field(default=None, max_length=200)
     deadline: date | None = None
     priority: Literal["high", "normal", "low"]
-    reasoning: str
+    reasoning: str = Field(max_length=500)
 
     @field_validator("deadline", mode="before")
     @classmethod
@@ -53,19 +60,34 @@ class ClassificationEntry(BaseModel):
         except ValueError:
             return None
 
+    @field_validator("topic", mode="before")
+    @classmethod
+    def _truncate_topic(cls, v: object) -> object:
+        return _truncate(v, 120)
+
+    @field_validator("requested_action", mode="before")
+    @classmethod
+    def _truncate_requested_action(cls, v: object) -> object:
+        return _truncate(v, 200)
+
+    @field_validator("reasoning", mode="before")
+    @classmethod
+    def _truncate_reasoning(cls, v: object) -> object:
+        return _truncate(v, 500)
+
 
 CLASSIFICATION_SCHEMA = {
     "type": "object",
     "properties": {
         "group": {"type": "string", "enum": list(GROUPS)},
-        "topic": {"type": "string"},
-        "requested_action": {"type": ["string", "null"]},
+        "topic": {"type": "string", "maxLength": 120},
+        "requested_action": {"anyOf": [{"type": "string", "maxLength": 200}, {"type": "null"}]},
         "deadline": {
             "anyOf": [{"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, {"type": "null"}],
             "description": "ISO date YYYY-MM-DD, or null when no concrete date is given",
         },
         "priority": {"type": "string", "enum": list(PRIORITIES)},
-        "reasoning": {"type": "string"},
+        "reasoning": {"type": "string", "maxLength": 500},
     },
     "required": ["group", "topic", "requested_action", "deadline", "priority", "reasoning"],
     "additionalProperties": False,
@@ -93,7 +115,7 @@ def build_prompt(nko: NKO, evidence: list[Evidence], corrections: list[dict], co
     if corrections:
         parts += ["", "Past corrections by the recipient for this sender or domain (follow these):"]
         parts += [f"- '{c.get('subject')}' was moved from {c.get('from_group')} to {c.get('to_group')}"
-                  + (f" ({c['note']})" if c.get("note") else "") for c in corrections]
+                  + (f" ({c['note'][:200]})" if c.get("note") else "") for c in corrections]
     parts += ["", "Return the JSON classification."]
     return "\n".join(parts)
 

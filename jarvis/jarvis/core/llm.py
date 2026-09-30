@@ -35,9 +35,17 @@ class LlamaCppClient:
         try:
             resp = self._client.post(f"{self.base_url}/v1/chat/completions", json=body)
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
+        except httpx.HTTPStatusError as e:
+            raise LLMError(f"HTTP {e.response.status_code}: {e.response.text[:300]}") from e
+        except httpx.HTTPError as e:
+            raise LLMError(str(e)) from e
+        try:
+            choice = resp.json()["choices"][0]
+            if choice.get("finish_reason") == "length":
+                raise LLMError("model output truncated at max_tokens")
+            content = choice["message"]["content"]
             out = json.loads(content)
-        except (httpx.HTTPError, KeyError, IndexError, ValueError) as e:
+        except (KeyError, IndexError, ValueError) as e:
             raise LLMError(str(e)) from e
         if not isinstance(out, dict):
             raise LLMError("model returned non-object JSON")
