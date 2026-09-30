@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 MODEL_ID = "jarvis"
 Responder = Callable[[list[dict], str | None], Iterator[str]]
@@ -48,7 +49,9 @@ def openai_router(respond: Responder) -> APIRouter:
         rid, created = f"chatcmpl-{uuid.uuid4().hex[:24]}", int(time.time())
         pieces = _safe(respond, messages, cid)
         if not body.get("stream"):
-            text = "".join(pieces)
+            # The responder is synchronous and slow (model calls, tool calls): draining it on the event loop
+            # would stall every other request for the whole turn.
+            text = await run_in_threadpool(lambda: "".join(pieces))
             return JSONResponse({"id": rid, "object": "chat.completion", "created": created, "model": MODEL_ID,
                                  "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
                                  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}})

@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -45,6 +47,42 @@ def test_stream_sse():
     assert chunks[0]["choices"][0]["delta"].get("role") == "assistant"
     assert "".join(ch["choices"][0]["delta"].get("content", "") for ch in chunks) == "Hello"
     assert chunks[-1]["choices"][0]["finish_reason"] == "stop" and all(ch["object"] == "chat.completion.chunk" for ch in chunks)
+
+
+def test_non_stream_requests_do_not_block_the_event_loop():
+    """A synchronous responder must be drained in a threadpool, or one slow turn stalls every other request."""
+    def slow(messages, conversation_id):
+        time.sleep(0.3)
+        yield "done"
+
+    body = {"messages": [{"role": "user", "content": "hi"}]}
+    with _app(slow) as c:  # one context manager, so both threads share a single event loop
+        c.post("/v1/chat/completions", json=body)  # warm up imports and the portal
+        codes: list[int] = []
+        started = time.monotonic()
+        threads = [threading.Thread(target=lambda: codes.append(c.post("/v1/chat/completions", json=body).status_code))
+                   for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        elapsed = time.monotonic() - started
+    assert codes == [200, 200] and elapsed < 0.55, f"two 0.3 s turns took {elapsed:.2f} s"
+
+
+def test_stream_reports_a_responder_that_fails_before_its_first_yield():
+    def bad(messages, conversation_id):
+        raise RuntimeError("boom before yield")
+        yield  # pragma: no cover
+
+    c = _app(bad)
+    with c.stream("POST", "/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}], "stream": True}) as r:
+        assert r.status_code == 200
+        lines = [ln for ln in r.iter_lines() if ln.startswith("data: ")]
+    assert lines[-1] == "data: [DONE]"
+    chunks = [json.loads(ln[6:]) for ln in lines[:-1]]
+    assert "boom before yield" in "".join(ch["choices"][0]["delta"].get("content", "") for ch in chunks)
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
 
 
 def test_conversation_id_from_header_when_body_lacks_it():
