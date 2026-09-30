@@ -3,7 +3,16 @@ import time
 
 import pytest
 
-from jarvis.agent import CHARS_PER_TOKEN, PERSONA, TOO_LONG, Agent
+from jarvis.agent import (
+    CHARS_PER_TOKEN,
+    MAX_CALLS_PER_STEP,
+    PERSONA,
+    SKIPPED_CALL,
+    TASK_SYSTEM,
+    TOO_LONG,
+    Agent,
+    _is_task_request,
+)
 from jarvis.core.llm import ChatTurn, FakeLLM, LLMError, ToolCall
 from jarvis.journal import Journal
 from jarvis.notes import Notes
@@ -38,6 +47,7 @@ def test_persona_and_notes_in_system_prompt(data_dir):
     system = llm.chat_calls[0]["messages"][0]
     assert system["role"] == "system" and PERSONA.split("\n")[0] in system["content"]
     assert "untrusted data" in system["content"] and "1. Always be brief." in system["content"]
+    assert "Gmail" in system["content"] and "never" in system["content"] and "search_mail" in system["content"]
     assert llm.chat_calls[0]["tools"][0]["function"]["name"] == "lookup"
 
 
@@ -208,6 +218,64 @@ def test_pending_notes_expire_at_the_start_of_a_turn(data_dir):
     notes.path.write_text(stale.model_dump_json() + "\n", encoding="utf-8")
     "".join(agent.respond([{"role": "user", "content": "hi"}]))
     assert notes.get(n.id).status == "retired" and notes.get(n.id).reason == "expired"
+
+
+def test_open_webui_task_prompt_runs_without_tools_or_notes(data_dir):
+    """Open WebUI's title/tag/follow-up generation reaches the same endpoint; it must not run a whole Jarvis loop."""
+    llm = FakeLLM(turns=[ChatTurn(content="Invoice question")])
+    agent, j = _agent(data_dir, llm)
+    Notes(data_dir, j).propose("Always be brief.", "chat", "explicit")
+    prompt = '### Task:\nGenerate a concise, 3-5 word title for the chat history.\n### Chat History:\nUSER: hi'
+    assert "".join(agent.respond([{"role": "user", "content": prompt}])) == "Invoice question"
+    assert len(llm.chat_calls) == 1 and llm.chat_calls[0]["tools"] is None
+    system = llm.chat_calls[0]["messages"][0]
+    assert system["content"] == TASK_SYSTEM and "Always be brief." not in system["content"]
+    chat = [e for e in j.iter_all() if e.kind == "chat"][0]
+    assert chat.payload["task_mode"] is True and chat.payload["steps"] == 0 and chat.payload["tools_used"] == []
+    assert not [e for e in j.iter_all() if e.kind == "tool_call"]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("### Task:\nwhatever", True),
+    ("Generate a concise, 3-5 word title for this chat", True),
+    ("Generate 1-3 broad tags categorizing the main themes", True),
+    ("Suggest 3-5 relevant follow-up questions", True),
+    ("What did Acme send me? Generate a title for it later.", False),
+])
+def test_is_task_request(text, expected):
+    assert _is_task_request([{"role": "user", "content": text}]) is expected
+    # the last user message decides it, not the last message in the transcript
+    assert _is_task_request([{"role": "user", "content": text}, {"role": "assistant", "content": "x"}]) is expected
+
+
+def test_context_overflow_is_retried_with_a_tighter_budget(data_dir):
+    """llama.cpp counts tokens, we count characters; when it says the request overflows, shrink and try once more."""
+    llm = FakeLLM(turns=[LLMError('HTTP 400: {"error":{"message":"the request exceeds the available context size"}}'),
+                         ChatTurn(content="ok")])
+    agent, j = _agent(data_dir, llm, context_tokens=8000, reply_tokens=1000)
+    msgs = [{"role": "user", "content": "old " * 3750}, {"role": "user", "content": "the question"}]
+    assert "".join(agent.respond(msgs)) == "ok"
+    first, second = (sum(len(m.get("content") or "") for m in c["messages"]) for c in llm.chat_calls[:2])
+    assert len(llm.chat_calls) == 2 and second <= 0.6 * first
+    chat = [e for e in j.iter_all() if e.kind == "chat"][0]
+    assert chat.payload["overflow_retries"] == 1 and chat.payload["refused"] is False
+    assert not [e for e in j.iter_all() if e.kind == "error"]  # the retry worked, so nothing failed
+
+
+def test_tool_call_storm_is_capped_and_deduped(data_dir):
+    """A 7B model can emit dozens of calls in one turn; only three run, and every tool_call_id still gets a reply."""
+    calls = [ToolCall(id=f"c{q}-{dup}", name="lookup", arguments={"q": f"q{q}"}) for q in range(4) for dup in range(3)]
+    llm = FakeLLM(turns=[ChatTurn(content="", tool_calls=calls, finish_reason="tool_calls"), ChatTurn(content="done")])
+    agent, j = _agent(data_dir, llm)
+    assert "".join(agent.respond([{"role": "user", "content": "everything"}])) == "done"
+    sent = llm.chat_calls[1]["messages"]
+    tool_msgs = [m for m in sent if m.get("role") == "tool"]
+    assert len(tool_msgs) == 12  # llama.cpp's template needs one reply per declared call
+    assert sum(1 for m in tool_msgs if m["content"] == SKIPPED_CALL) == 12 - MAX_CALLS_PER_STEP == 9
+    assert [m["content"] for m in tool_msgs if m["content"] != SKIPPED_CALL] == [f"result for q{i}" for i in range(3)]
+    assert len([e for e in j.iter_all() if e.kind == "tool_call"]) == 3
+    chat = [e for e in j.iter_all() if e.kind == "chat"][0]
+    assert chat.payload["tool_calls_skipped"] == 9 and chat.payload["tools_used"] == ["lookup"] * 3
 
 
 def test_multimodal_content_parts_are_flattened(data_dir):
