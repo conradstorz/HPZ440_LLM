@@ -73,6 +73,7 @@ Assert-FileContains 'docs/jarvis.md' '^## Chat'
 Assert-FileContains 'docs/roadmap.md' 'Phase 1.5'
 Assert-FileContains 'README.md' 'scripts/jarvis-agent-token\.ps1'
 Assert-FileContains 'compose.yaml' 'JARVIS_CONTEXT_TOKENS=\$\{LLM_CONTEXT_SIZE:-4096\}'
+Assert-FileContains 'compose.yaml' 'ENABLE_FORWARD_USER_INFO_HEADERS=true'
 
 $Gitkeep = Join-Path $Root 'models/.gitkeep'
 if (-not (Test-Path $Gitkeep)) { throw 'Missing models/.gitkeep placeholder' }

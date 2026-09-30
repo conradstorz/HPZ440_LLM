@@ -47,7 +47,16 @@ What it can do: search and read your archived mail, show the briefing for any gr
 document on your workstation through GTE's agent, and keep notes you teach it. Every one of those is a tool call that
 passes `jarvis/policy` first and is written to the journal as a `tool_call` event with its arguments, whether it
 succeeded, and the first 200 characters of its result. A whole turn is journaled as one `chat` event (steps taken,
-tools used, characters in and out).
+tools used, characters in and out, plus `tool_calls_skipped`, `overflow_retries` and `task_mode`). Open WebUI's chat
+id reaches the journal as `conversation_id` because
+`compose.yaml` sets `ENABLE_FORWARD_USER_INFO_HEADERS=true`; without it Open WebUI strips the header and every turn
+journals `None`.
+
+The loop executes at most three tool calls per step, dropping duplicates and anything past the cap with a `skipped`
+tool reply, because a 7B model asked one question can emit thirty calls in a single turn and their combined results
+overflow the context. Jarvis also detects Open WebUI's own generation prompts — chat titles, tags, follow-up
+questions, which begin `### Task:` — and answers them with one plain model call, no tools and no notes, so they
+neither run a Jarvis loop nor leave pending notes behind.
 
 What it cannot do: send, forward, label, archive, or delete mail; reach the internet; call a cloud model. The policy
 gate refuses those actions in code, not by prompt, and the reply says so plainly if you ask.
@@ -60,7 +69,8 @@ with what it has.
 Two operator settings in Open WebUI matter:
 
 - Set the **Task Model** (Admin → Settings → Interface) to the raw llama.cpp model. Left on `jarvis`, every chat
-  title and tag generation runs a second full Jarvis loop, with its own tool calls and journal events.
+  title and tag generation costs a second model call on the same GPU; Jarvis recognises those prompts and answers
+  them without tools, but the raw model does the job faster and keeps them out of the chat journal entirely.
 - On an existing Open WebUI volume the persisted connection list wins over `OPENAI_API_BASE_URLS`. If `jarvis` is
   missing from the model list, add the connection `http://jarvis:8090/v1` (any key) in Admin → Settings →
   Connections.
@@ -77,7 +87,9 @@ the next run, so teaching Jarvis a triage rule changes the next briefing.
 
 `http://localhost:8090/notes` lists every note by status (active, pending, retired) with its id, version, what it
 applies to, and where it came from. Each active or pending note has a Retire form; a reason is required and is stored
-with the note. Retiring writes a new version, it does not delete: the note's history stays in `notes.jsonl`.
+with the note. The Pending section also has a **Retire all pending** form, for when a stray turn has left a pile of
+proposals behind; there the reason is optional. Retiring writes a new version, it does not delete: the note's history
+stays in `notes.jsonl`.
 
 ### Workstation documents
 

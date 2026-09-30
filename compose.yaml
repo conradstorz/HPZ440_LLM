@@ -42,6 +42,8 @@ services:
       - OPENAI_API_BASE_URLS=http://llm-api:8080/v1;http://jarvis:8090/v1
       - OPENAI_API_KEYS=local;local
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-change-me-before-use}
+      # Without this, Open WebUI strips X-OpenWebUI-Chat-Id and every Jarvis turn journals conversation_id: None.
+      - ENABLE_FORWARD_USER_INFO_HEADERS=true
     volumes:
       - open-webui-data:/app/backend/data
 
