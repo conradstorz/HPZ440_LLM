@@ -2,6 +2,7 @@
 
 Status: Approved
 Updated: 2026-09-30
+Amended 2026-09-30: only token.json is copied to the host.
 Roadmap phase: `docs/roadmap.md`, Phase 1, plus the `draft` unit pulled forward from Phase 2
 
 ## Purpose
@@ -247,7 +248,7 @@ All follow the `Select-String` single-key `.env` convention of `start.ps1` and r
 
 | Script | Does |
 | --- | --- |
-| `scripts/jarvis-auth.ps1 -CredentialsPath <credentials.json>` | Runs `uv run jarvis auth <credentials.json>` in `jarvis/` on the workstation (console OAuth flow, read-only scope, browser opens locally), producing `token.json`. Then copies `credentials.json` and `token.json` into `HOST_JARVIS_DATA_DIR/secrets/` on the host via `docker --context <ctx> run --rm -i -v <HOST_JARVIS_DATA_DIR>:/data alpine sh -c 'mkdir -p /data/secrets && cat > /data/secrets/token.json'` fed from stdin, one file per call. Prints the scope granted. |
+| `scripts/jarvis-auth.ps1 -CredentialsPath <credentials.json>` | Runs `uv run jarvis auth <credentials.json>` in `jarvis/` on the workstation (console OAuth flow, read-only scope, browser opens locally), producing `token.json`. Then copies `token.json` (which embeds the client id and secret needed for refresh) into `HOST_JARVIS_DATA_DIR/secrets/` on the host via a one-shot `alpine` container reading stdin. `credentials.json` stays on the workstation. |
 | `scripts/jarvis-run.ps1` | `POST http://localhost:<JARVIS_HOST_PORT>/run`, then `GET /health`, prints message count and last run time. |
 | `scripts/jarvis-reindex.ps1` | `docker --context <ctx> compose exec -T jarvis uv run --no-dev jarvis reindex`, prints indexed count. |
 | `scripts/health.ps1` | Gains a `GET /health` against `JARVIS_HOST_PORT`, reported alongside the existing two checks. |

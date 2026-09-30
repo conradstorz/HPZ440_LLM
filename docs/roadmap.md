@@ -31,10 +31,10 @@ Mapping to the Jarvis logical components:
 | Jarvis component | Status in this repo |
 | --- | --- |
 | Local inference service | Exists (`llm-api`). Validated on hardware 2026-09-29. |
-| User interface | Open WebUI exists as a raw chat surface only. No briefing, approvals, or rule UI. |
-| Jarvis application | Absent. |
-| Mail connector | Absent. |
-| Retrieval service | Absent. |
+| User interface | Open WebUI for raw chat. Jarvis briefing UI at `JARVIS_HOST_PORT` (Phase 1). |
+| Jarvis application | `jarvis` container (Phase 1): pipeline, policy, journal, briefing. |
+| Mail connector | `jarvis/sources/gmail.py`, read-only scope (Phase 1). |
+| Retrieval service | `jarvis/retrieval`, SQLite FTS5 over the archive (Phase 1). |
 | Cloud gateway | Absent. |
 | NAS archive | Absent. |
 
@@ -61,6 +61,8 @@ Exit criteria:
 Decisions this phase resolves: model file and quantization; acceptable latency for triage (target: one email classified in under 10 seconds); whether 4096 context is enough for a message plus retrieved evidence, or `LLM_CONTEXT_SIZE` must rise.
 
 ## Phase 1: Observe (read-only inbox briefing)
+
+Phase 1 status: implemented 2026-09-30 per `docs/superpowers/specs/2026-09-30-jarvis-phase-1-observe-design.md`. The `draft` unit from Phase 2 was pulled forward because it is local and read-only. The data model is GTE's Normalized Knowledge Object (immutable, versioned) rather than the separate per-unit records sketched below; the unit table stands as the map of responsibilities. First live run: recorded in `docs/jarvis.md` once done.
 
 Goal: Jarvis reads new Gmail, stores a local archive copy under `/data/archive/` (the Gmail mailbox itself is never modified; messages stay in the inbox), classifies it, searches prior records, and presents a briefing. It takes no outbound action. This is the Jarvis document's first milestone and permission stage 1.
 
@@ -105,7 +107,7 @@ Goal: permission stage 2. Jarvis prepares reply drafts and proposed actions (Gma
 
 In scope:
 
-- `draft` unit: produces reply text and a proposed action per message, stored with the message and shown in the briefing.
+- `draft` unit: delivered in Phase 1. Phase 2 work is quality review of its output, not construction.
 - Correction loop: past corrections from the journal are retrieved as few-shot evidence for `classify` and `draft`.
 - Quality gate: a `docs/quality.md` log of weekly review sessions recording classification accuracy against Conrad's corrections. Phase 3 does not start until accuracy is judged dependable in that log.
 

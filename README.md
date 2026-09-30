@@ -20,10 +20,21 @@ Operations project for serving 7B-class GGUF models from the HPZ440 LAN server w
 8. Run `pwsh -NoProfile -File scripts/health.ps1`.
 9. Run `pwsh -NoProfile -File scripts/benchmark.ps1` and record the result in `docs/models.md`.
 
+## Jarvis
+
+Phase 1 of the Jarvis assistant runs as the `jarvis` service: read-only Gmail capture, local classification, evidence search, drafts, and a briefing page. Setup and use: `docs/jarvis.md`.
+
+```powershell
+pwsh -NoProfile -File scripts/jarvis-auth.ps1 -CredentialsPath C:\path\to\credentials.json   # once
+pwsh -NoProfile -File scripts/jarvis-run.ps1
+pwsh -NoProfile -File scripts/jarvis-reindex.ps1
+```
+
 ## Default URLs
 
 - API: `http://localhost:8080/v1`
 - Open WebUI: `http://localhost:3000`
+- Jarvis briefing: `http://localhost:8090`
 
 For LAN clients, replace `localhost` with the HPZ440 hostname or LAN IP.
 
