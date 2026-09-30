@@ -19,7 +19,9 @@ class Index:
         self._store = store
         self.path = Path(data_dir) / "index" / "mail.sqlite"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path)
+        # The web app builds Index on the main thread and calls it from request worker threads. Safe because
+        # /run is serialised by web.py's run_lock and no other route touches the index.
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
         if self._conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
             self.rebuild()
 
