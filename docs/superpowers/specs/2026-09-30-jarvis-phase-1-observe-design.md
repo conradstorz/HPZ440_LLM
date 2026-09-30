@@ -78,7 +78,7 @@ jarvis/
   archive/<dedup_key>/nko-v0.json, nko-v1.json, ..., raw.eml, attachments/<sha256>-<filename>
   journal/YYYY-MM-DD.jsonl
   index/mail.sqlite
-  secrets/credentials.json, token.json
+  secrets/token.json
 ```
 
 `dedup_key` for Gmail is `gmail:<account>:<message_id>`, filesystem-safe after replacing `:` with `_` in directory names.
