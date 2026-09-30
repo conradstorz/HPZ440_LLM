@@ -31,7 +31,7 @@ Mapping to the Jarvis logical components:
 | Jarvis component | Status in this repo |
 | --- | --- |
 | Local inference service | Exists (`llm-api`). Validated on hardware 2026-09-29. |
-| User interface | Open WebUI for raw chat. Jarvis briefing UI at `JARVIS_HOST_PORT` (Phase 1). |
+| User interface | Open WebUI: raw chat against `llm-api`, and chat with the `jarvis` model itself (Phase 1.5). Jarvis briefing and `/notes` pages at `JARVIS_HOST_PORT` (Phase 1, 1.5). |
 | Jarvis application | `jarvis` container (Phase 1): pipeline, policy, journal, briefing. |
 | Mail connector | `jarvis/sources/gmail.py`, read-only scope (Phase 1). |
 | Retrieval service | `jarvis/retrieval`, SQLite FTS5 over the archive (Phase 1). |
@@ -100,6 +100,33 @@ Exit criteria:
 - No outbound Gmail action is possible: the OAuth scope is read-only and the `policy` tests prove rejection.
 
 Decisions this phase resolves: schedule vs on-demand (start on-demand, add a periodic poll once quality is trusted); how corrections feed back (Phase 1 stores them; Phase 2 uses them); briefing UI framework (server-rendered HTML is enough).
+
+## Phase 1.5: Converse
+
+Phase 1.5 status: implemented 2026-09-30 per `docs/superpowers/specs/` and `.superpowers/sdd/jarvis-converse/`. Inserted between Phase 1 and Phase 2 because everything it needs is local and read-only: it adds no credential, no scope, and no outbound action.
+
+Goal: stop being a page Conrad reads and become an assistant he talks to. He picks the `jarvis` model in Open WebUI and asks about his own mail; Jarvis answers from the archive with cited message keys. He teaches it rules in the same conversation, and those rules change the next briefing. Documents on his workstation are read on demand instead of being archived.
+
+What it adds:
+
+- `jarvis/core/llm` gains `chat` and `chat_stream` (tool calling and streaming) beside the existing structured-JSON call.
+- `jarvis/tools`: a registry where every tool carries a JSON schema, a policy action, and a handler. `run()` is the only path a model-requested call takes, so the policy gate and the journal cannot be bypassed. Tools: `search_mail`, `get_message`, `briefing`, `correct`, `list_notes`, `propose_note`, `confirm_note`, `retire_note`, `list_documents`, `read_document`.
+- `jarvis/agent`: the conversation loop. Persona plus active notes as the system prompt, bounded steps and context, one `chat` journal event per turn and one `tool_call` event per call.
+- `jarvis/notes`: durable teaching notes in `/data/notes/notes.jsonl`, append-only and versioned like the archive. Explicit notes ("remember: ...") save active at once; anything else is proposed, stays pending until Conrad says yes, and expires after a day. Pending notes are injected nowhere.
+- `jarvis/openai_api`: an OpenAI-compatible `/v1/models` and `/v1/chat/completions` on the existing `jarvis` port, streaming and non-streaming, so Open WebUI needs no plugin. `open-webui` now lists both backends through `OPENAI_API_BASE_URLS`.
+- `jarvis/sources/workspace`: a client for GTE's passive workspace agent on the workstation (`JARVIS_WORKSPACE_AGENT_URL`, bearer token at `/data/secrets/agent_token`, copied there by `scripts/jarvis-agent-token.ps1`). Jarvis always initiates; the agent never calls in. Nothing read this way is archived.
+- A `/notes` page on the briefing UI listing notes by status with a retire control.
+
+Permission stage is unchanged at 1 to 2: `jarvis/policy` gains only `notes_read`, `notes_write`, `correct`, and `documents_read`. No send, no modify, no internet, no cloud.
+
+Exit criteria:
+
+- A question about mail is answered in Open WebUI from the archive, citing a message key that really exists.
+- One explicit note and one proposed-then-confirmed note are visible on `/notes` as active, and both appear in the next run's classify prompt.
+- One document on the workstation is listed and read through the workspace agent.
+- No `policy_reject` event for an outbound tool: the registry never exposes one, and the gate refuses it if a model invents one.
+
+Decisions this phase resolves: chat transport (OpenAI-compatible endpoint inside the existing service, not a second container); how teaching is stored (versioned notes beside the archive, not prompt-file edits); whether workstation documents are archived (no, read on demand).
 
 ## Phase 2: Propose (drafts and proposed actions)
 

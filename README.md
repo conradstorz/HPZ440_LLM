@@ -22,10 +22,11 @@ Operations project for serving 7B-class GGUF models from the HPZ440 LAN server w
 
 ## Jarvis
 
-Phase 1 of the Jarvis assistant runs as the `jarvis` service: read-only Gmail capture, local classification, evidence search, drafts, and a briefing page. Setup and use: `docs/jarvis.md`.
+Phase 1 of the Jarvis assistant runs as the `jarvis` service: read-only Gmail capture, local classification, evidence search, drafts, and a briefing page. Phase 1.5 adds chat: pick the **jarvis** model in Open WebUI and ask about your own mail. It answers from the archive with cited message keys, keeps the rules you teach it, and reads workstation documents on request. Setup and use: `docs/jarvis.md`.
 
 ```powershell
 pwsh -NoProfile -File scripts/jarvis-auth.ps1   # once; reads C:\Users\<you>\.jarvis\credentials.json by default
+pwsh -NoProfile -File scripts/jarvis-agent-token.ps1   # once, only for workstation documents; reads ~/.jarvis/agent_token
 pwsh -NoProfile -File scripts/jarvis-run.ps1
 pwsh -NoProfile -File scripts/jarvis-reindex.ps1
 ```
@@ -34,7 +35,7 @@ pwsh -NoProfile -File scripts/jarvis-reindex.ps1
 
 - API: `http://localhost:8080/v1`
 - Open WebUI: `http://localhost:3000`
-- Jarvis briefing: `http://localhost:8090`
+- Jarvis briefing: `http://localhost:8090` (notes at `/notes`, chat API at `/v1/chat/completions`)
 
 For LAN clients, replace `localhost` with the HPZ440 hostname or LAN IP.
 

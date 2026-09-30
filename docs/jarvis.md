@@ -1,4 +1,4 @@
-# Jarvis (Phase 1: Observe)
+# Jarvis (Phase 1: Observe, Phase 1.5: Converse)
 
 Jarvis reads new Gmail with a read-only credential, archives every message as an immutable knowledge object, classifies it with the local model, searches earlier mail for evidence, prepares a reply draft and a proposed inbox action, and shows a grouped briefing. It takes no outbound action: nothing is sent, labelled, archived, or deleted in Gmail. The permission stage is 1 (Observe) as defined in `JARVIS_Home_Assistant_Reference.md`; drafts and proposed actions are shown so their quality can be judged, never executed.
 
@@ -11,9 +11,11 @@ Jarvis reads new Gmail with a read-only credential, archives every message as an
 /data/archive/<key>/nko-v0.json ...   one directory per message; v0 is the fact of record, never rewritten
 /data/archive/<key>/raw.eml           the original RFC 822 message
 /data/archive/<key>/attachments/      one file per attachment, named `<sha256 prefix>-<filename>`
-/data/journal/YYYY-MM-DD.jsonl        append-only event log: run, capture, classify, draft, correction, policy_reject, error
+/data/journal/YYYY-MM-DD.jsonl        append-only event log: run, capture, classify, draft, correction, note, tool_call, chat, policy_reject, error
 /data/index/mail.sqlite               full-text index; disposable, rebuilt from the archive
+/data/notes/notes.jsonl               append-only teaching notes; the latest version of each id wins
 /data/secrets/token.json              Gmail refresh token, read-only scope
+/data/secrets/agent_token             bearer token for GTE's workspace agent on the workstation
 ```
 
 ## One-time Gmail setup
@@ -35,6 +37,52 @@ To revoke: remove the app at https://myaccount.google.com/permissions and delete
 - `pwsh -NoProfile -File scripts/jarvis-reindex.ps1` drops and rebuilds the search index from the archive. Safe at any time.
 - `pwsh -NoProfile -File scripts/health.ps1` now also checks `/health` on the Jarvis port.
 
+## Chat (Phase 1.5)
+
+Jarvis is also a chat model. In Open WebUI (`http://localhost:3000`) pick **jarvis** from the model list beside the raw
+llama.cpp model; Open WebUI reaches it at `http://jarvis:8090/v1` over the compose network. The raw model answers from
+nothing but its weights; Jarvis answers from your archive, and cites the message keys it used.
+
+What it can do: search and read your archived mail, show the briefing for any group, record a correction, read a
+document on your workstation through GTE's agent, and keep notes you teach it. Every one of those is a tool call that
+passes `jarvis/policy` first and is written to the journal as a `tool_call` event with its arguments, whether it
+succeeded, and the first 200 characters of its result. A whole turn is journaled as one `chat` event (steps taken,
+tools used, characters in and out).
+
+What it cannot do: send, forward, label, archive, or delete mail; reach the internet; call a cloud model. The policy
+gate refuses those actions in code, not by prompt, and the reply says so plainly if you ask.
+
+### Teaching it
+
+Say "remember: invoices from Acme are always mine" and the note is saved active at once. State a preference any other
+way and Jarvis proposes the note, asks "Save this note? (yes/no)", and saves it only after you say yes. Until then the
+note is **pending** and reaches no prompt: pending notes are never injected into chat, classification, or drafts, and
+a pending note nobody confirms is retired automatically after a day.
+
+Active notes are injected into the system prompt for chat and into the classify and draft prompts for every message in
+the next run, so teaching Jarvis a triage rule changes the next briefing.
+
+`http://localhost:8090/notes` lists every note by status (active, pending, retired) with its id, version, what it
+applies to, and where it came from. Each active or pending note has a Retire form; a reason is required and is stored
+with the note. Retiring writes a new version, it does not delete: the note's history stays in `notes.jsonl`.
+
+### Workstation documents
+
+Document tools read files on this Windows workstation through GTE's passive agent. Jarvis always initiates; the agent
+never calls into the HPZ440.
+
+1. Set `JARVIS_WORKSPACE_AGENT_URL` in `.env` to the workstation's tailnet address and the agent's port, for example
+   `http://100.x.y.z:8765`. Left empty, the document tools stay registered but every call answers that no workspace
+   agent is configured.
+2. Put the agent's bearer token in `C:\Users\<you>\.jarvis\agent_token` (one line, no quotes). It stays on the
+   workstation; only the copy under `/data/secrets/` reaches the host.
+3. Run `pwsh -NoProfile -File scripts/jarvis-agent-token.ps1`. It copies the token to `/data/secrets/agent_token` on
+   the host at mode 600 and never prints it.
+4. Run `pwsh -NoProfile -File scripts/start.ps1` to restart with the new URL.
+
+The token is read from disk on each request, not at startup, so the service starts fine before the token exists;
+`list_documents` and `read_document` simply report that the agent is unavailable. Nothing read this way is archived.
+
 ## Guarantees enforced in code
 
 - The OAuth token is requested with `gmail.readonly` only, and the client refuses to start if the stored token carries any other scope.
@@ -46,6 +94,9 @@ To revoke: remove the app at https://myaccount.google.com/permissions and delete
 
 - The briefing's forms carry no CSRF token. Accepted: the service is LAN-only, unauthenticated by design, and never takes an outbound action.
 - Message text is fenced as untrusted data in the prompt, but the fence itself is not escaped. A hostile message can at worst mis-group itself or produce a draft that is displayed and never sent.
+- The chat endpoint (`/v1/chat/completions`) carries no auth, like the rest of the service. Anything on the LAN that
+  can reach port 8090 can read your mail through it. LAN only; the hardening phase in `roadmap.md` owns this.
+- A pending note expires after a day. If you meant to say yes and did not, state the rule again.
 - A large backlog is drained 50 messages per run, not all at once; trigger repeated runs, or raise `JARVIS_MAX_MESSAGES_PER_RUN`, to catch up. Gmail's per-user quota is the real ceiling.
 
 ## Tests
@@ -76,4 +127,4 @@ Classification quality has not yet been judged: no corrections have been submitt
 
 ## Not in this phase
 
-Sending or modifying mail, cloud models, scheduled polling, calendar or document sources, the GTE workspace agent, auth on the briefing, NAS storage. See `roadmap.md`.
+Sending or modifying mail, cloud models, scheduled polling, calendar sources, auth on the briefing or the chat endpoint, NAS storage. See `roadmap.md`. Phase 1.5 added chat, teaching notes, and read-only workstation documents; the rest of this list is unchanged.

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 An operations repo plus the Jarvis Phase 1 application under `jarvis/`. It ships a Docker Compose stack (llama.cpp CUDA server + Open WebUI) that runs on the **remote** HPZ440 LAN server, plus PowerShell scripts that drive it from this Windows workstation via the Docker CLI context `hpz440`. Nothing runs locally except `uv run pytest` under `jarvis/` and the one-time OAuth consent in `scripts/jarvis-auth.ps1`.
 
-This stack is the "local inference service" piece of the larger Jarvis home-assistant plan described in `docs/JARVIS_Home_Assistant_Reference.md`. The phased path from here to Jarvis is `docs/roadmap.md`; new work should map to a phase there. Phase 1 (Observe) is implemented under `jarvis/`; see `docs/jarvis.md`.
+This stack is the "local inference service" piece of the larger Jarvis home-assistant plan described in `docs/JARVIS_Home_Assistant_Reference.md`. The phased path from here to Jarvis is `docs/roadmap.md`; new work should map to a phase there. Phase 1 (Observe) and Phase 1.5 (Converse) are implemented under `jarvis/`; see `docs/jarvis.md`.
 
 ## Commands
 
@@ -21,6 +21,7 @@ pwsh -NoProfile -File scripts/list-models.ps1                      # lists local
 pwsh -NoProfile -File scripts/check-gpu.ps1                        # nvidia-smi in a throwaway container on hpz440
 pwsh -NoProfile -File scripts/fetch-model.ps1 [-Repo r] [-File f]  # one-shot container downloads a GGUF into HOST_MODEL_DIR on the host
 pwsh -NoProfile -File scripts/jarvis-auth.ps1 [-CredentialsPath p]   # one-time Gmail consent (default ~/.jarvis/credentials.json), copies token to host
+pwsh -NoProfile -File scripts/jarvis-agent-token.ps1 [-TokenFile p]  # copies the GTE workspace agent token (default ~/.jarvis/agent_token) to /data/secrets/agent_token
 pwsh -NoProfile -File scripts/jarvis-run.ps1                                        # POST /run then GET /health
 pwsh -NoProfile -File scripts/jarvis-reindex.ps1                                    # rebuild FTS index in the container
 ```
@@ -41,11 +42,12 @@ Python: `cd jarvis` then `uv run pytest` (no network, no GPU).
 - `start.ps1`/`stop.ps1` take the Docker context from `DOCKER_CONTEXT` in `.env` (falling back to `hpz440`), not from the CLI's currently selected context.
 - Two path namespaces: `HOST_MODEL_DIR` (`/srv/llm/models` on the HPZ440) is bind-mounted read-only at `/models` in the container. `LLM_MODEL_PATH` must always be the **container** path (`/models/x.gguf`); `switch-model.ps1` enforces that regex.
 - `jarvis` service builds from `jarvis/`, mounts `HOST_JARVIS_DATA_DIR` at `/data`, publishes `JARVIS_HOST_PORT`. Units import only `jarvis.core`, `jarvis.journal`, `jarvis.policy`; the pipeline wires them. Facts live in NKO v0 and are never rewritten; every later stage is a new version.
+- The same service also serves `/v1/models` and `/v1/chat/completions` (`jarvis.openai_api` over `jarvis.agent`), which is how `open-webui` lists a `jarvis` model beside `llm-api` via `OPENAI_API_BASE_URLS`. Every model-requested tool call goes through `ToolRegistry.run`, which checks `policy` and writes a `tool_call` journal event; there is no other path. Teaching notes live in `/data/notes/notes.jsonl` and pending ones are injected nowhere.
 
 ## Conventions That Matter Here
 
 - **Tests assert literal file content.** `tests/*.ps1` regex-match against `compose.yaml`, `.env.example`, `.gitignore`, `README.md`, `docs/*.md`, and each script. Renaming a script, changing a default port, or rewording a doc heading will break them — update the assertions in the same change. Only `assert-script-contracts.ps1` normalizes CRLF for multi-line patterns; `assert-project-shape.ps1` matches single lines.
-- **`.env` parsing is duplicated** in `health.ps1` and `benchmark.ps1` (identical `Get-Content | -match '^[A-Z0-9_]+=.*$'` block); `start.ps1`, `stop.ps1`, `list-models.ps1`, `check-gpu.ps1`, `fetch-model.ps1`, `jarvis-auth.ps1`, `jarvis-run.ps1`, and `jarvis-reindex.ps1` use `Select-String` on single keys instead. Keep any parsing change consistent across all ten.
+- **`.env` parsing is duplicated** in `health.ps1` and `benchmark.ps1` (identical `Get-Content | -match '^[A-Z0-9_]+=.*$'` block); `start.ps1`, `stop.ps1`, `list-models.ps1`, `check-gpu.ps1`, `fetch-model.ps1`, `jarvis-auth.ps1`, `jarvis-run.ps1`, `jarvis-reindex.ps1`, and `jarvis-agent-token.ps1` use `Select-String` on single keys instead. Keep any parsing change consistent across all eleven.
 - Scripts target `http://localhost:<port>`, which assumes the workstation reaches the HPZ440's published ports at localhost (SSH tunnel or equivalent). LAN clients use the hostname/IP instead.
 - `list-models.ps1` prints `HOST_MODEL_DIR` but only enumerates the local `models/` directory — it does not list files on the remote host.
 - Model weights, `.env`, `benchmarks/`, and logs are gitignored. Keep it that way.

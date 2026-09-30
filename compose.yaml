@@ -33,11 +33,12 @@ services:
     restart: unless-stopped
     depends_on:
       - llm-api
+      - jarvis
     ports:
       - "${WEBUI_HOST_PORT:-3000}:8080"
     environment:
-      - OPENAI_API_BASE_URL=http://llm-api:8080/v1
-      - OPENAI_API_KEY=local
+      - OPENAI_API_BASE_URLS=http://llm-api:8080/v1;http://jarvis:8090/v1
+      - OPENAI_API_KEYS=local;local
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-change-me-before-use}
     volumes:
       - open-webui-data:/app/backend/data
@@ -56,6 +57,7 @@ services:
       - JARVIS_GMAIL_ACCOUNT=${JARVIS_GMAIL_ACCOUNT:-}
       - JARVIS_GMAIL_QUERY=${JARVIS_GMAIL_QUERY:-in:inbox}
       - JARVIS_MAX_MESSAGES_PER_RUN=${JARVIS_MAX_MESSAGES_PER_RUN:-50}
+      - JARVIS_WORKSPACE_AGENT_URL=${JARVIS_WORKSPACE_AGENT_URL:-}
     volumes:
       - "${HOST_JARVIS_DATA_DIR:-/srv/llm/jarvis-data}:/data"
 
