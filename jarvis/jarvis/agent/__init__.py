@@ -59,6 +59,11 @@ def _is_overflow(e: Exception) -> bool:
     return "exceed" in text or "context size" in text
 
 
+def _mchars(m: dict) -> int:
+    """What a message really costs in the prompt: tool_calls, call ids and tool names are serialized too."""
+    return len(json.dumps(m, ensure_ascii=False))
+
+
 def _flatten(content: object) -> str:
     if isinstance(content, list):
         return "\n".join(str(p.get("text", "")) for p in content if isinstance(p, dict) and p.get("type", "text") == "text")
@@ -76,6 +81,14 @@ class Agent:
         """Characters the whole prompt (system + transcript + tool results + schemas) may occupy."""
         return max(0, (self.context_tokens - self.reply_tokens) * CHARS_PER_TOKEN)
 
+    def _remaining(self, started: float) -> float:
+        """Seconds left on the turn's deadline, floored so a nearly-spent budget still allows one short call.
+
+        The deadline is checked between steps, but a blocking HTTP read inside a step can outlast it on its own;
+        passing this as the per-request timeout is what actually bounds the turn.
+        """
+        return max(5.0, self.deadline_seconds - (time.monotonic() - started))
+
     def _system(self) -> str:
         notes = self._notes.render_for_prompt("chat")
         return PERSONA + f"\nToday is {date.today().isoformat()}." + (f"\n\n{notes}" if notes else "")
@@ -87,9 +100,9 @@ class Agent:
         """Drop oldest transcript turns until the prompt fits. None means even the newest turn cannot fit."""
         budget = max(0, self._budget() - len(system) - len(json.dumps(schemas)))
         kept = list(transcript)
-        while len(kept) > 1 and sum(len(m["content"]) for m in kept) > budget:
+        while len(kept) > 1 and sum(_mchars(m) for m in kept) > budget:
             kept.pop(0)
-        if kept and len(kept[-1]["content"]) > budget:
+        if kept and _mchars(kept[-1]) > budget:
             return None  # truncating the live question silently would answer a different question
         return kept
 
@@ -104,7 +117,7 @@ class Agent:
         schema_chars = len(json.dumps(schemas))
 
         def total(ms: list[dict]) -> int:
-            return sum(len(m.get("content") or "") for m in ms) + schema_chars
+            return sum(_mchars(m) for m in ms) + schema_chars
 
         msgs = list(msgs)
         while total(msgs) > budget:
@@ -134,11 +147,13 @@ class Agent:
             return None
         if "save this note?" not in transcript[-2]["content"].lower():
             return None
-        ids = [m for m in _NOTE_ID.findall(transcript[-2]["content"]) if self._notes.get(m)]
-        pending = [n for n in self._notes.all_latest() if n.status == "pending"]
-        note_id = ids[-1] if ids else (pending[-1].id if pending else None)
-        if note_id is None:
+        # Only an id the asking turn actually named counts. A "newest pending note" fallback would let a bare "yes"
+        # in an unrelated chat confirm whatever proposal happened to be last.
+        ids = [m for m in _NOTE_ID.findall(transcript[-2]["content"])
+               if (n := self._notes.get(m)) is not None and n.status == "pending"]
+        if not ids:
             return None
+        note_id = ids[-1]
         return {"role": "system", "content": f"The user confirmed the pending note {note_id}; call confirm_note with that id, then acknowledge briefly."}
 
     def respond(self, messages: list[dict], *, conversation_id: str | None = None) -> Iterator[str]:
@@ -152,7 +167,7 @@ class Agent:
         kept = self._trim(system, transcript, schemas)
         if kept is None:
             self._journal.append(JournalEvent.new("chat", payload={"conversation_id": conversation_id, "steps": 0, "tools_used": [],
-                                                                   "in_chars": sum(len(m["content"]) for m in transcript),
+                                                                   "in_chars": sum(_mchars(m) for m in transcript),
                                                                    "out_chars": len(TOO_LONG), "steps_exhausted": False,
                                                                    "deadline_hit": False, "refused": True,
                                                                    "tool_calls_skipped": 0, "overflow_retries": 0,
@@ -165,7 +180,7 @@ class Agent:
             msgs.append(hint)
         last_user = next((m["content"] for m in reversed(transcript) if m["role"] == "user"), "")
         context = {"explicit_allowed": bool(_EXPLICIT.search(last_user))}
-        in_chars = sum(len(m["content"]) for m in msgs)
+        in_chars = sum(_mchars(m) for m in msgs)
         steps, tools_used, out_chars, exhausted, deadline_hit = 0, [], 0, False, False
         tool_calls_skipped, overflow_retries = 0, 0
         try:
@@ -176,7 +191,7 @@ class Agent:
                     break
                 msgs = self._fit(msgs, schemas)
                 try:
-                    turn = self._llm.chat(msgs, schemas or None, max_tokens=self.reply_tokens)
+                    turn = self._llm.chat(msgs, schemas or None, max_tokens=self.reply_tokens, timeout=self._remaining(started))
                 except LLMError as e:
                     if not _is_overflow(e):
                         raise
@@ -184,7 +199,7 @@ class Agent:
                     # estimate lost. Shrink hard and replay the same turn once before giving up.
                     overflow_retries += 1
                     msgs = self._fit(msgs, schemas, budget_chars=int(self._budget() * OVERFLOW_FACTOR))
-                    turn = self._llm.chat(msgs, schemas or None, max_tokens=self.reply_tokens)
+                    turn = self._llm.chat(msgs, schemas or None, max_tokens=self.reply_tokens, timeout=self._remaining(started))
                 if task_mode or not turn.tool_calls:
                     answer = turn.content or ""
                     break
@@ -212,7 +227,8 @@ class Agent:
                 steps += 1
             if exhausted:
                 msgs.append({"role": "system", "content": FORCE_ANSWER})
-                for chunk in self._llm.chat_stream(self._fit(msgs, schemas), max_tokens=self.reply_tokens):
+                for chunk in self._llm.chat_stream(self._fit(msgs, schemas), max_tokens=self.reply_tokens,
+                                                   timeout=self._remaining(started)):
                     out_chars += len(chunk)
                     yield chunk
             else:

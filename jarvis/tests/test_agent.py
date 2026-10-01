@@ -283,3 +283,48 @@ def test_multimodal_content_parts_are_flattened(data_dir):
     agent, _ = _agent(data_dir, llm)
     "".join(agent.respond([{"role": "user", "content": [{"type": "text", "text": "part one"}, {"type": "text", "text": "part two"}]}]))
     assert llm.chat_calls[0]["messages"][-1]["content"] == "part one\npart two"
+
+
+def test_fit_counts_serialized_tool_calls(data_dir):
+    """A 3000-char tool_calls argument reaches the server even when content is empty; the budget must see it."""
+    agent, _ = _agent(data_dir, FakeLLM())
+    bulky = {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "lookup", "arguments": json.dumps({"q": "x" * 3000})}}]}
+    msgs = [{"role": "system", "content": "s" * 300},
+            {"role": "assistant", "content": "droppable filler"},
+            bulky,
+            {"role": "tool", "tool_call_id": "c1", "name": "lookup", "content": "r" * 50},
+            {"role": "user", "content": "q"}]
+    budget = sum(len(m.get("content") or "") for m in msgs) + 500  # everything fits if only content is counted
+    kept = agent._fit(msgs, [], budget_chars=budget)
+    assert not any(m.get("content") == "droppable filler" for m in kept)  # the serialized call forced a drop
+    assert any(m.get("tool_calls") for m in kept)  # the oversized call is the protected newest turn
+    assert kept[-1]["content"] == "q" and kept[0]["content"] == "s" * 300
+
+
+def test_confirmation_hint_needs_the_id_in_the_question(data_dir):
+    """A bare 'yes' must not confirm whatever note happens to be newest: the asking turn has to name the id."""
+    llm = FakeLLM(turns=[ChatTurn(content="which one?")])
+    agent, j = _agent(data_dir, llm)
+    Notes(data_dir, j).propose("Bob likes brevity.", "draft", "proposed")  # a pending note exists, unnamed
+    msgs = [{"role": "user", "content": "bob likes short mails"},
+            {"role": "assistant", "content": "Save this note? (yes/no)"},
+            {"role": "user", "content": "yes"}]
+    "".join(agent.respond(msgs))
+    sent = llm.chat_calls[0]["messages"]
+    assert not any(m["role"] == "system" and "confirm_note" in (m.get("content") or "") for m in sent[1:])
+    assert sent[-1]["content"] == "yes"
+
+
+def test_chat_calls_carry_the_remaining_deadline(data_dir, monkeypatch):
+    """A blocking HTTP read must not outlive the turn's deadline, so every call gets what is left of it."""
+    llm = FakeLLM(turns=[ChatTurn(content="", tool_calls=[ToolCall(id="c", name="lookup", arguments={"q": "x"})],
+                                  finish_reason="tool_calls"),
+                         ChatTurn(content="done")])
+    monkeypatch.setattr(time, "monotonic", lambda: 0.0 if not llm.chat_calls else 80.0)
+    agent, _ = _agent(data_dir, llm, deadline_seconds=90.0)
+    assert "".join(agent.respond([{"role": "user", "content": "slow"}])) == "done"
+    assert len(llm.chat_calls) == 2
+    assert llm.chat_calls[0]["timeout"] == 90.0
+    assert 5.0 <= llm.chat_calls[1]["timeout"] <= 10.0  # 10 s left, floored at 5

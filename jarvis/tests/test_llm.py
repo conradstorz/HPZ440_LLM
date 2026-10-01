@@ -132,3 +132,18 @@ def test_fake_llm_chat_and_stream():
     assert f.chat_calls[0]["tools"] == [{"type": "function"}]
     with pytest.raises(LLMError):
         f.chat([])
+
+
+def test_per_request_timeout_overrides_the_client_default():
+    """The agent's remaining deadline has to bound the blocking read, not just the gap between steps."""
+    seen: list = []
+
+    def handler(req: httpx.Request):
+        seen.append(req.extensions.get("timeout"))
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "hi"}}]})
+
+    c = LlamaCppClient("http://llm", "m", timeout=120.0, transport=_transport(handler))
+    c.chat([{"role": "user", "content": "hi"}], timeout=7.0)
+    c.chat([{"role": "user", "content": "hi"}])
+    assert seen[0]["read"] == 7.0
+    assert seen[1]["read"] == 120.0  # omitted means keep the client default, not "wait forever"

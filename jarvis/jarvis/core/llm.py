@@ -14,6 +14,11 @@ class LLMError(Exception):
     pass
 
 
+def _timeout_kw(timeout: float | None) -> dict:
+    """httpx treats an explicit timeout=None as "wait forever", so pass nothing and keep the client default."""
+    return {} if timeout is None else {"timeout": timeout}
+
+
 class ToolCall(BaseModel):
     id: str
     name: str
@@ -30,8 +35,9 @@ class LLMClient(Protocol):
     model_name: str
 
     def complete_json(self, system: str, user: str, schema: dict, *, max_tokens: int = 1024) -> dict: ...
-    def chat(self, messages: list[dict], tools: list[dict] | None = None, *, max_tokens: int = 1024) -> ChatTurn: ...
-    def chat_stream(self, messages: list[dict], *, max_tokens: int = 1024) -> Iterator[str]: ...
+    def chat(self, messages: list[dict], tools: list[dict] | None = None, *, max_tokens: int = 1024,
+             timeout: float | None = None) -> ChatTurn: ...
+    def chat_stream(self, messages: list[dict], *, max_tokens: int = 1024, timeout: float | None = None) -> Iterator[str]: ...
 
 
 def _parse_tool_calls(raw: list | None) -> list[ToolCall]:
@@ -92,9 +98,10 @@ class LlamaCppClient:
         except httpx.HTTPError:
             return False
 
-    def _post(self, body: dict) -> httpx.Response:
+    def _post(self, body: dict, timeout: float | None = None) -> httpx.Response:
         try:
-            resp = self._client.post(f"{self.base_url}/v1/chat/completions", json=body)
+            # httpx reads timeout=None as "no timeout at all", so only override the client default when asked.
+            resp = self._client.post(f"{self.base_url}/v1/chat/completions", json=body, **_timeout_kw(timeout))
             resp.raise_for_status()
             return resp
         except httpx.HTTPStatusError as e:
@@ -102,12 +109,13 @@ class LlamaCppClient:
         except httpx.HTTPError as e:
             raise LLMError(str(e)) from e
 
-    def chat(self, messages: list[dict], tools: list[dict] | None = None, *, max_tokens: int = 1024) -> ChatTurn:
+    def chat(self, messages: list[dict], tools: list[dict] | None = None, *, max_tokens: int = 1024,
+             timeout: float | None = None) -> ChatTurn:
         body: dict[str, Any] = {"model": self.model_name, "messages": messages, "temperature": 0, "max_tokens": max_tokens}
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
-        resp = self._post(body)
+        resp = self._post(body, timeout)
         try:
             choice = resp.json()["choices"][0]
             msg = choice["message"]
@@ -116,10 +124,10 @@ class LlamaCppClient:
         except (KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
             raise LLMError(f"{type(e).__name__}: {e}") from e
 
-    def chat_stream(self, messages: list[dict], *, max_tokens: int = 1024) -> Iterator[str]:
+    def chat_stream(self, messages: list[dict], *, max_tokens: int = 1024, timeout: float | None = None) -> Iterator[str]:
         body = {"model": self.model_name, "messages": messages, "temperature": 0, "max_tokens": max_tokens, "stream": True}
         try:
-            with self._client.stream("POST", f"{self.base_url}/v1/chat/completions", json=body) as resp:
+            with self._client.stream("POST", f"{self.base_url}/v1/chat/completions", json=body, **_timeout_kw(timeout)) as resp:
                 if resp.status_code >= 400:
                     raise LLMError(f"HTTP {resp.status_code}: {resp.read()[:300]!r}")
                 for line in resp.iter_lines():
@@ -159,8 +167,9 @@ class FakeLLM:
             raise r
         return r
 
-    def chat(self, messages: list[dict], tools: list[dict] | None = None, *, max_tokens: int = 1024) -> ChatTurn:
-        self.chat_calls.append({"messages": [dict(m) for m in messages], "tools": tools})
+    def chat(self, messages: list[dict], tools: list[dict] | None = None, *, max_tokens: int = 1024,
+             timeout: float | None = None) -> ChatTurn:
+        self.chat_calls.append({"messages": [dict(m) for m in messages], "tools": tools, "timeout": timeout})
         if not self.turns:
             raise LLMError("FakeLLM has no queued turn")
         t = self.turns.pop(0)
@@ -168,6 +177,6 @@ class FakeLLM:
             raise t
         return t
 
-    def chat_stream(self, messages: list[dict], *, max_tokens: int = 1024) -> Iterator[str]:
-        self.chat_calls.append({"messages": [dict(m) for m in messages], "tools": None, "stream": True})
+    def chat_stream(self, messages: list[dict], *, max_tokens: int = 1024, timeout: float | None = None) -> Iterator[str]:
+        self.chat_calls.append({"messages": [dict(m) for m in messages], "tools": None, "stream": True, "timeout": timeout})
         yield from self.stream_chunks
