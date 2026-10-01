@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import threading
 from pathlib import Path
 
 import httpx
@@ -34,9 +35,10 @@ class WorkspaceClient:
         self.base_url = base_url.rstrip("/")
         self._token_path = Path(token_path)
         self._client = httpx.Client(timeout=timeout, transport=transport)
-        # sha256 -> every file in the last listing with that content; identical files under different names
-        # share one sha and must not overwrite each other.
-        self._last: dict[str, list[dict]] = {}
+        # Per request thread: sha256 -> every file in that thread's last listing with that content; identical files
+        # under different names share one sha and must not overwrite each other. One client serves every concurrent
+        # chat, so a listing in one thread must never authorise a read in another.
+        self._tls = threading.local()
 
     def _headers(self) -> dict[str, str]:
         if not self.base_url:
@@ -68,14 +70,15 @@ class WorkspaceClient:
         for d in docs:
             if d["sha256"]:
                 last.setdefault(d["sha256"], []).append(d)
-        self._last = last
+        self._tls.last = last
         return docs
 
     def read_document(self, sha256: str) -> tuple[dict, str | None]:
         # No implicit whole-workstation scan: a read is only ever for something a listing already showed.
-        if not self._last:
+        last = getattr(self._tls, "last", None)
+        if not last:
             raise KeyError("call list_documents first")
-        matches = [ds for k, ds in self._last.items() if k.startswith(sha256)]
+        matches = [ds for k, ds in last.items() if k.startswith(sha256)]
         if len(matches) != 1:
             raise KeyError(f"{sha256}: {'no' if not matches else 'ambiguous'} match in the last listing; call list_documents first")
         meta = matches[0][0]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -17,6 +18,9 @@ Status = Literal["pending", "active", "retired"]
 Source = Literal["explicit", "proposed"]
 MAX_TEXT = 500
 RENDER_TRUNCATED = "\n... (older notes omitted)"
+# One uvicorn worker, many request threads: every read-check-append below runs under this lock, so two
+# concurrent confirms of the same note cannot both see it pending and both append a version 1.
+_LOCK = threading.RLock()
 
 
 class Note(BaseModel):
@@ -65,18 +69,20 @@ class Notes:
 
     def propose(self, text: str, applies_to: AppliesTo, source: Source) -> Note:
         now = utcnow()
-        return self._append(Note(id=secrets.token_hex(4), text=text, applies_to=applies_to,
-                                 status="active" if source == "explicit" else "pending", source=source,
-                                 created_at=now, updated_at=now))
+        with _LOCK:
+            return self._append(Note(id=secrets.token_hex(4), text=text, applies_to=applies_to,
+                                     status="active" if source == "explicit" else "pending", source=source,
+                                     created_at=now, updated_at=now))
 
     def _transition(self, note_id: str, allowed_from: tuple[str, ...], status: Status, reason: str | None) -> Note:
-        current = self._load().get(note_id)
-        if current is None:
-            raise KeyError(note_id)
-        if current.status not in allowed_from:
-            raise ValueError(f"note {note_id} is {current.status}, cannot move to {status}")
-        return self._append(current.model_copy(update={"version": current.version + 1, "status": status,
-                                                       "reason": reason, "updated_at": utcnow()}))
+        with _LOCK:
+            current = self._load().get(note_id)
+            if current is None:
+                raise KeyError(note_id)
+            if current.status not in allowed_from:
+                raise ValueError(f"note {note_id} is {current.status}, cannot move to {status}")
+            return self._append(current.model_copy(update={"version": current.version + 1, "status": status,
+                                                           "reason": reason, "updated_at": utcnow()}))
 
     def confirm(self, note_id: str) -> Note:
         return self._transition(note_id, ("pending",), "active", None)
@@ -87,10 +93,11 @@ class Notes:
     def retire_all_pending(self, reason: str) -> int:
         """Retire every pending note at once. One stray model turn can leave a dozen proposals behind."""
         retired = 0
-        for n in self.all_latest():
-            if n.status == "pending":
-                self._transition(n.id, ("pending",), "retired", reason)
-                retired += 1
+        with _LOCK:
+            for n in self.all_latest():
+                if n.status == "pending":
+                    self._transition(n.id, ("pending",), "retired", reason)
+                    retired += 1
         return retired
 
     def all_latest(self) -> list[Note]:
@@ -103,10 +110,11 @@ class Notes:
     def expire_pending(self, older_than: timedelta = timedelta(days=1), now: datetime | None = None) -> int:
         now = now or utcnow()
         expired = 0
-        for n in self.all_latest():
-            if n.status == "pending" and now - n.created_at > older_than:
-                self._transition(n.id, ("pending",), "retired", "expired")
-                expired += 1
+        with _LOCK:
+            for n in self.all_latest():
+                if n.status == "pending" and now - n.created_at > older_than:
+                    self._transition(n.id, ("pending",), "retired", "expired")
+                    expired += 1
         return expired
 
     def render_for_prompt(self, applies_to: str, max_chars: int = 4000) -> str:

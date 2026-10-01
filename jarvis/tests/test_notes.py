@@ -1,3 +1,4 @@
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -87,3 +88,33 @@ def test_retire_all_pending(notes):
         assert notes.get(p.id).status == "retired" and notes.get(p.id).reason == "junk from Open WebUI task prompts"
         assert notes.get(p.id).version == 1
     assert notes.retire_all_pending("again") == 0  # idempotent: nothing pending is left
+
+
+def test_concurrent_confirm_lets_exactly_one_win(notes, data_dir):
+    """uvicorn runs one worker but many threads; read-check-append must be atomic or a note gets two version-1 lines."""
+    n = notes.propose("race me", "chat", "proposed")
+    start = threading.Barrier(20)
+    wins: list[Note] = []
+    errors: list[Exception] = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        start.wait()
+        try:
+            got = notes.confirm(n.id)
+        except Exception as e:  # noqa: BLE001 - the loser's ValueError is the point of the test
+            with lock:
+                errors.append(e)
+        else:
+            with lock:
+                wins.append(got)
+
+    threads = [threading.Thread(target=worker) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(wins) == 1 and wins[0].version == 1
+    assert len(errors) == 19 and all(isinstance(e, ValueError) for e in errors)
+    lines = [Note.model_validate_json(line) for line in notes.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert [v.version for v in lines if v.id == n.id] == [0, 1]

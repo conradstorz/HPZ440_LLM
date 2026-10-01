@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 
 import httpx
@@ -105,3 +106,30 @@ def test_extract_text_types():
     assert extract_text("a.csv", b"x,y\n1,2") == "x,y\n1,2"
     assert extract_text("a.exe", b"\x00") is None
     assert extract_text("a.json", b"{}") == "{}"
+
+
+def test_the_last_listing_is_per_thread(client):
+    """Two chats share one client; a listing in one request thread must not authorise a read in another."""
+    listed = threading.Event()
+    errors: dict[str, BaseException] = {}
+    names: dict[str, str] = {}
+
+    def lister() -> None:
+        client.list_documents("*")
+        listed.set()
+        names["lister"] = client.read_document(SHA_MD[:12])[0]["name"]
+
+    def reader() -> None:
+        assert listed.wait(5)
+        try:
+            client.read_document(SHA_MD[:12])
+        except BaseException as e:  # noqa: BLE001 - the KeyError is what the test asserts
+            errors["reader"] = e
+
+    threads = [threading.Thread(target=lister), threading.Thread(target=reader)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert isinstance(errors.get("reader"), KeyError) and "call list_documents first" in str(errors["reader"])
+    assert names["lister"] == "doc_sample.md"  # the thread that listed still reads fine
