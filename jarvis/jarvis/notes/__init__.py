@@ -17,7 +17,8 @@ AppliesTo = Literal["classify", "draft", "chat", "all"]
 Status = Literal["pending", "active", "retired"]
 Source = Literal["explicit", "proposed"]
 MAX_TEXT = 500
-RENDER_TRUNCATED = "\n... (older notes omitted)"
+RENDER_HEADER = "Notes from Conrad:"
+RENDER_OMITTED = "... ({count} older note{plural} omitted)"
 # One uvicorn worker, many request threads: every read-check-append below runs under this lock, so two
 # concurrent confirms of the same note cannot both see it pending and both append a version 1.
 _LOCK = threading.RLock()
@@ -121,7 +122,19 @@ class Notes:
         notes = self.active(applies_to)
         if not notes:
             return ""
-        block = "Notes from Conrad:\n" + "\n".join(f"{i}. {n.text}" for i, n in enumerate(notes, 1))
-        if len(block) > max_chars:  # an unbounded note set must not crowd the transcript out of the context
-            block = block[: max(0, max_chars - len(RENDER_TRUNCATED))] + RENDER_TRUNCATED
-        return block
+
+        def block(kept: list[Note], omitted: int) -> str:
+            lines = [RENDER_HEADER]
+            if omitted:
+                lines.append(RENDER_OMITTED.format(count=omitted, plural="" if omitted == 1 else "s"))
+            lines += [f"{i}. {n.text}" for i, n in enumerate(kept, 1)]
+            return "\n".join(lines)
+
+        # An unbounded note set must not crowd the transcript out of the context, but cutting the tail threw away
+        # the note Conrad taught last. Drop whole notes from the oldest end instead and say how many went.
+        kept = list(notes)
+        out = block(kept, 0)
+        while len(kept) > 1 and len(out) > max_chars:
+            kept.pop(0)
+            out = block(kept, len(notes) - len(kept))
+        return out if len(out) <= max_chars else out[: max(0, max_chars)]

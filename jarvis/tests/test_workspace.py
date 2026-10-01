@@ -1,3 +1,4 @@
+import io
 import json
 import threading
 from pathlib import Path
@@ -133,3 +134,45 @@ def test_the_last_listing_is_per_thread(client):
         t.join(10)
     assert isinstance(errors.get("reader"), KeyError) and "call list_documents first" in str(errors["reader"])
     assert names["lister"] == "doc_sample.md"  # the thread that listed still reads fine
+
+
+def test_oversized_file_is_skipped_without_downloading(tmp_path: Path):
+    """The listing already carries the size; a 50 MB file must not be pulled into memory to be truncated anyway."""
+    tok = tmp_path / "agent_token"
+    tok.write_text("tok-123\n", encoding="utf-8")
+    seen: list = []
+
+    def handler(req: httpx.Request):
+        seen.append(req.url.path)
+        if req.url.path == "/scan":
+            return httpx.Response(200, json={"matches": [
+                {"name": "huge.txt", "folder": "C:/Docs", "size": 50_000_000, "mtime": "t", "sha256": SHA_MD},
+                {"name": "small.txt", "folder": "C:/Docs", "size": 5, "mtime": "t", "sha256": SHA_PDF}]})
+        return httpx.Response(200, content=b"hello")
+
+    c = WorkspaceClient("http://agent:8765", tok, transport=httpx.MockTransport(handler), max_document_bytes=1_000_000)
+    c.list_documents()
+    meta, text = c.read_document(SHA_MD[:12])
+    assert text is None and meta["skipped_reason"] == "too_large"
+    assert seen == ["/scan"]  # nothing was fetched
+    meta, text = c.read_document(SHA_PDF[:12])
+    assert text == "hello" and "skipped_reason" not in meta
+    assert seen == ["/scan", f"/file/{SHA_PDF}"]
+
+
+def _three_page_pdf() -> bytes:
+    from pypdf import PdfWriter
+
+    w = PdfWriter()
+    for _ in range(3):
+        w.add_blank_page(width=72, height=72)
+    buf = io.BytesIO()
+    w.write(buf)
+    return buf.getvalue()
+
+
+def test_pdf_extraction_stops_at_the_page_cap():
+    data = _three_page_pdf()
+    assert extract_text("a.pdf", data) == "\n\n"  # three blank pages joined by two separators
+    assert extract_text("a.pdf", data, max_pdf_pages=1) == ""  # only the first page was read
+    assert extract_text("a.pdf", data, max_pdf_pages=2) == "\n"

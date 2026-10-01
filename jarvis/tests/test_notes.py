@@ -58,8 +58,9 @@ def test_render_for_prompt_is_capped(notes):
         notes.propose(f"{i} " + "x" * 480, "chat", "explicit")
     assert len(notes.render_for_prompt("chat", max_chars=10**9)) > 4000  # the raw block really is oversized
     capped = notes.render_for_prompt("chat", max_chars=1000)
-    assert len(capped) == 1000 and capped.endswith("(older notes omitted)")
-    assert len(notes.render_for_prompt("chat")) == 4000  # the default cap protects the context budget
+    assert len(capped) <= 1000 and "older notes omitted" in capped
+    assert ". 29 x" in capped  # the newest note survives the cap
+    assert len(notes.render_for_prompt("chat")) <= 4000  # the default cap protects the context budget
 
 
 def test_text_is_truncated_and_expire_pending(notes):
@@ -118,3 +119,16 @@ def test_concurrent_confirm_lets_exactly_one_win(notes, data_dir):
     assert len(errors) == 19 and all(isinstance(e, ValueError) for e in errors)
     lines = [Note.model_validate_json(line) for line in notes.path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert [v.version for v in lines if v.id == n.id] == [0, 1]
+
+
+def test_render_drops_whole_oldest_notes_and_counts_them(notes):
+    """Truncating the tail threw away the note Conrad taught last; the oldest whole lines go instead."""
+    for i in range(10):
+        notes.propose(f"note{i}-" + "x" * 494, "chat", "explicit")
+    text = notes.render_for_prompt("chat", max_chars=1200)
+    assert len(text) <= 1200
+    assert "note8-" in text and "note9-" in text  # the two newest
+    assert not any(f"note{i}-" in text for i in range(8))
+    assert "(8 older notes omitted)" in text
+    assert text.index("note8-") < text.index("note9-")  # still chronological
+    assert "1. note8-" in text and "2. note9-" in text  # renumbered from what is left

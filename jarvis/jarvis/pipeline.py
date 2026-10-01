@@ -196,7 +196,8 @@ def build_runtime(settings: Settings | None = None, *, with_gmail: bool = True) 
     notes.expire_pending()  # a pending note nobody confirmed within a day is retired before anything reads it
     llm = LlamaCppClient(s.llm_base_url, s.llm_model, timeout=s.llm_timeout)
     # The token is read per request, not here, so the app starts before jarvis-agent-token.ps1 has ever run.
-    workspace = WorkspaceClient(s.workspace_agent_url, s.secrets_dir / "agent_token")
+    workspace = WorkspaceClient(s.workspace_agent_url, s.secrets_dir / "agent_token",
+                                max_document_bytes=s.max_document_bytes, max_pdf_pages=s.max_pdf_pages)
     tools = build_registry(policy, journal, store=store, index=index, briefing=briefing, notes=notes,
                            workspace=workspace, content_chars=s.content_chars)
     rt = Runtime(settings=s, store=store, journal=journal, policy=policy, index=index, briefing=briefing, llm=llm,

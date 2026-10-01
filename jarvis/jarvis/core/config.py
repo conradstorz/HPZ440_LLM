@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     gmail_query: str = "in:inbox"
     initial_lookback_days: int = 7
     max_attachment_bytes: int = 25_000_000
+    max_document_bytes: int = 5_000_000
+    max_pdf_pages: int = 20
     max_messages_per_run: int = 50
     content_chars: int = 6000
     # Must match llama.cpp's --ctx-size; compose feeds both from LLM_CONTEXT_SIZE so they cannot diverge.

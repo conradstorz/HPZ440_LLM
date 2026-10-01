@@ -129,3 +129,12 @@ def test_document_tools(world):
     assert len(run(reg, "read_document", sha256="abc123def456")) < 120  # content_chars=50 cap plus header
     ws.text = None
     assert "no text extracted" in run(reg, "read_document", sha256="abc123def456")
+
+
+def test_read_document_reports_a_skipped_oversized_file(world):
+    reg, ws = world[0], world[3]
+    ws.docs = [{**ws.docs[0], "size": 50_000_000, "skipped_reason": "too_large"}]
+    ws.text = None
+    out = run(reg, "read_document", sha256="abc123def456")
+    assert "skipped: file larger than the configured limit" in out
+    assert "no text extracted" not in out  # the reason must not be mistaken for an unsupported file type

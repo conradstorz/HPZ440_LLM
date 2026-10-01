@@ -9,13 +9,16 @@ from pathlib import Path
 import httpx
 
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".log", ".json", ".yaml", ".yml", ".toml", ".ini"}
+# A document the agent can neither hold in context nor usefully summarise is not worth the memory it would take.
+MAX_DOCUMENT_BYTES = 5_000_000
+MAX_PDF_PAGES = 20
 
 
 class WorkspaceUnavailable(Exception):
     pass
 
 
-def extract_text(name: str, data: bytes) -> str | None:
+def extract_text(name: str, data: bytes, *, max_pdf_pages: int = MAX_PDF_PAGES) -> str | None:
     suffix = Path(name).suffix.lower()
     if suffix in TEXT_SUFFIXES:
         return data.decode("utf-8", errors="replace")
@@ -24,16 +27,20 @@ def extract_text(name: str, data: bytes) -> str | None:
 
         try:
             reader = PdfReader(io.BytesIO(data))
-            return "\n".join((page.extract_text() or "") for page in reader.pages)
+            pages = reader.pages[:max_pdf_pages] if max_pdf_pages > 0 else reader.pages
+            return "\n".join((page.extract_text() or "") for page in pages)
         except Exception as e:  # noqa: BLE001 - a broken PDF is not a reason to fail the tool
             return f"(could not extract PDF text: {type(e).__name__})"
     return None
 
 
 class WorkspaceClient:
-    def __init__(self, base_url: str, token_path: Path, *, timeout: float = 30.0, transport: httpx.BaseTransport | None = None) -> None:
+    def __init__(self, base_url: str, token_path: Path, *, timeout: float = 30.0, transport: httpx.BaseTransport | None = None,
+                 max_document_bytes: int = MAX_DOCUMENT_BYTES, max_pdf_pages: int = MAX_PDF_PAGES) -> None:
         self.base_url = base_url.rstrip("/")
         self._token_path = Path(token_path)
+        self._max_document_bytes = max_document_bytes
+        self._max_pdf_pages = max_pdf_pages
         self._client = httpx.Client(timeout=timeout, transport=transport)
         # Per request thread: sha256 -> every file in that thread's last listing with that content; identical files
         # under different names share one sha and must not overwrite each other. One client serves every concurrent
@@ -82,5 +89,12 @@ class WorkspaceClient:
         if len(matches) != 1:
             raise KeyError(f"{sha256}: {'no' if not matches else 'ambiguous'} match in the last listing; call list_documents first")
         meta = matches[0][0]
+        try:
+            size = int(meta.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size > self._max_document_bytes:
+            # The listing already told us the size, so refuse before the download rather than after it.
+            return {**meta, "skipped_reason": "too_large"}, None
         data = self._request("GET", f"/file/{meta['sha256']}").content
-        return meta, extract_text(meta["name"], data)
+        return meta, extract_text(meta["name"], data, max_pdf_pages=self._max_pdf_pages)

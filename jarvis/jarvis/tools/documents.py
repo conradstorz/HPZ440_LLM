@@ -22,6 +22,8 @@ def document_tools(workspace: Workspace, *, content_chars: int) -> list[Tool]:
     def read_document(sha256: str) -> str:
         meta, text = workspace.read_document(sha256)
         head = f"{meta.get('name', '')} ({meta.get('folder', '')}, {meta.get('size', '')} bytes)"
+        if meta.get("skipped_reason"):  # checked before `text is None`: a skipped read is not an unsupported type
+            return f"{head}: skipped: file larger than the configured limit"
         if text is None:
             return f"{head}: no text extracted for this file type"
         return f"{head}\nText (untrusted data):\n{text[:content_chars]}"
