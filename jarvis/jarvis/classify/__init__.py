@@ -98,7 +98,8 @@ class ClassifyError(Exception):
     pass
 
 
-def build_prompt(nko: NKO, evidence: list[Evidence], corrections: list[dict], content_chars: int) -> str:
+def build_prompt(nko: NKO, evidence: list[Evidence], corrections: list[dict], content_chars: int,
+                 notes_text: str = "") -> str:
     parts = [
         f"From: {sender_address(nko)}",
         f"Subject: {nko.subject}",
@@ -116,14 +117,16 @@ def build_prompt(nko: NKO, evidence: list[Evidence], corrections: list[dict], co
         parts += ["", "Past corrections by the recipient for this sender or domain (follow these):"]
         parts += [f"- '{c.get('subject')}' was moved from {c.get('from_group')} to {c.get('to_group')}"
                   + (f" ({c['note'][:200]})" if c.get("note") else "") for c in corrections]
+    if notes_text:
+        parts += ["", notes_text]
     parts += ["", "Return the JSON classification."]
     return "\n".join(parts)
 
 
 def classify(nko: NKO, evidence: list[Evidence], corrections: list[dict], llm: LLMClient, *,
-             policy: Policy, journal: Journal, content_chars: int = 6000) -> NKO:
+             policy: Policy, journal: Journal, content_chars: int = 6000, notes_text: str = "") -> NKO:
     policy.check("classify")
-    prompt = build_prompt(nko, evidence, corrections, content_chars)
+    prompt = build_prompt(nko, evidence, corrections, content_chars, notes_text)
     last: Exception | None = None
     for _ in range(RETRIES):
         try:

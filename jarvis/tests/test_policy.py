@@ -10,7 +10,8 @@ def policy(data_dir):
 
 
 def test_allowed_set_is_exact():
-    assert ALLOWED == frozenset({"read", "archive_copy", "classify", "search", "suggest", "draft"})
+    assert ALLOWED == frozenset({"read", "archive_copy", "classify", "search", "suggest", "draft",
+                                 "correct", "notes_read", "notes_write", "documents_read"})
 
 
 @pytest.mark.parametrize("action", sorted(ALLOWED))

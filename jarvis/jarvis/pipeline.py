@@ -13,10 +13,15 @@ from jarvis.core.nko import NKO, sender_address, sender_domain, utcnow
 from jarvis.core.run import RunSummary
 from jarvis.core.store import Store
 from jarvis.draft import draft
+from jarvis.agent import Agent
 from jarvis.journal import Journal, JournalEvent
+from jarvis.notes import Notes
 from jarvis.policy import Policy
 from jarvis.retrieval import Index
 from jarvis.sources.base import Source
+from jarvis.sources.workspace import WorkspaceClient
+from jarvis.tools import ToolRegistry
+from jarvis.tools.registry import build_registry
 
 OVERLAP = timedelta(hours=1)
 # A message that has failed this many times is left alone so one poisoned message cannot burn every run.
@@ -29,7 +34,8 @@ class PollError(Exception):
 
 def _process(nko: NKO, *, llm: LLMClient, store: Store, journal: Journal, index: Index, policy: Policy,
              briefing: Briefing, settings: Settings, summary: RunSummary, stage: list[str],
-             corrections_cache: dict[tuple[str, str], list[dict]]) -> None:
+             corrections_cache: dict[tuple[str, str], list[dict]], notes_classify: str = "",
+             notes_draft: str = "") -> None:
     """Advance one message from whatever version it has to v2. Raises on the first failing stage."""
     stage[0] = "capture"
     newly_captured = False
@@ -53,12 +59,14 @@ def _process(nko: NKO, *, llm: LLMClient, store: Store, journal: Journal, index:
     if not current.classifications:
         policy.check("search")
         evidence = index.search(f"{current.subject or ''} {sender_address(current)}", k=5, exclude=current.dedup_key)
-        current = classify(current, evidence, corrections, llm, policy=policy, journal=journal, content_chars=settings.content_chars)
+        current = classify(current, evidence, corrections, llm, policy=policy, journal=journal,
+                           content_chars=settings.content_chars, notes_text=notes_classify)
         store.save_version(current)
         summary.classified += 1
     stage[0] = "draft"
     if not current.recommendations:
-        current = draft(current, corrections, llm, policy=policy, journal=journal, content_chars=settings.content_chars)
+        current = draft(current, corrections, llm, policy=policy, journal=journal,
+                        content_chars=settings.content_chars, notes_text=notes_draft)
         store.save_version(current)
         summary.drafted += 1
 
@@ -85,8 +93,10 @@ def _next_since(last: JournalEvent | None, now: datetime, settings: Settings) ->
 
 
 def run_once(*, sources: list[Source], llm: LLMClient, store: Store, journal: Journal, index: Index, policy: Policy,
-             briefing: Briefing, settings: Settings, now: datetime | None = None) -> RunSummary:
+             briefing: Briefing, notes: Notes, settings: Settings, now: datetime | None = None) -> RunSummary:
     policy.check("read")
+    # Rendered once per run: the note set cannot change mid-run, and every message in the run must see the same rules.
+    notes_classify, notes_draft = notes.render_for_prompt("classify"), notes.render_for_prompt("draft")
     now = now or utcnow()
     summary = RunSummary(since=_next_since(journal.last_run(), now, settings))
     since = summary.since
@@ -107,7 +117,8 @@ def run_once(*, sources: list[Source], llm: LLMClient, store: Store, journal: Jo
         stage = ["capture"]
         try:
             _process(nko, llm=llm, store=store, journal=journal, index=index, policy=policy, briefing=briefing,
-                     settings=settings, summary=summary, stage=stage, corrections_cache=corrections_cache)
+                     settings=settings, summary=summary, stage=stage, corrections_cache=corrections_cache,
+                     notes_classify=notes_classify, notes_draft=notes_draft)
         except Exception as e:  # noqa: BLE001 - one message must never stop the run
             summary.errors += 1
             latest = store.get_latest(nko.dedup_key)
@@ -159,19 +170,39 @@ class Runtime:
     index: Index
     briefing: Briefing
     llm: LlamaCppClient
+    notes: Notes
+    workspace: WorkspaceClient
+    tools: ToolRegistry
+    agent: Agent
     sources: list[Source] = field(default_factory=list)
 
     def run_once(self) -> RunSummary:
         return run_once(sources=self.sources, llm=self.llm, store=self.store, journal=self.journal, index=self.index,
-                        policy=self.policy, briefing=self.briefing, settings=self.settings)
+                        policy=self.policy, briefing=self.briefing, notes=self.notes, settings=self.settings)
+
+    def respond(self, messages: list[dict], conversation_id: str | None = None):
+        """Positional signature the OpenAI router expects."""
+        return self.agent.respond(messages, conversation_id=conversation_id)
 
 
 def build_runtime(settings: Settings | None = None, *, with_gmail: bool = True) -> Runtime:
     s = settings or Settings()
     store = Store(s.data_dir)
     journal = Journal(s.data_dir)
-    rt = Runtime(settings=s, store=store, journal=journal, policy=Policy(journal), index=Index(s.data_dir, store),
-                 briefing=Briefing(store, journal), llm=LlamaCppClient(s.llm_base_url, s.llm_model, timeout=s.llm_timeout))
+    policy = Policy(journal)
+    index = Index(s.data_dir, store)
+    briefing = Briefing(store, journal)
+    notes = Notes(s.data_dir, journal)
+    notes.expire_pending()  # a pending note nobody confirmed within a day is retired before anything reads it
+    llm = LlamaCppClient(s.llm_base_url, s.llm_model, timeout=s.llm_timeout)
+    # The token is read per request, not here, so the app starts before jarvis-agent-token.ps1 has ever run.
+    workspace = WorkspaceClient(s.workspace_agent_url, s.secrets_dir / "agent_token",
+                                max_document_bytes=s.max_document_bytes, max_pdf_pages=s.max_pdf_pages)
+    tools = build_registry(policy, journal, store=store, index=index, briefing=briefing, notes=notes,
+                           workspace=workspace, content_chars=s.content_chars)
+    rt = Runtime(settings=s, store=store, journal=journal, policy=policy, index=index, briefing=briefing, llm=llm,
+                 notes=notes, workspace=workspace, tools=tools,
+                 agent=Agent(llm, tools, notes, journal, context_tokens=s.context_tokens))
     if with_gmail:
         rt.sources.append(_LazyGmail(s, store))
     return rt

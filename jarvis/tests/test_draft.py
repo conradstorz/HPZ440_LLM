@@ -66,3 +66,9 @@ def test_reply_text_is_truncated_to_schema_limit(deps):
 def test_schema_bounds_reply_text_length():
     string_branch = next(b for b in DRAFT_SCHEMA["properties"]["reply_text"]["anyOf"] if b.get("type") == "string")
     assert string_branch["maxLength"] == 2000
+
+
+def test_notes_text_appears_in_prompt(deps):
+    llm = FakeLLM([GOOD])
+    draft(classified(make_nko()), [], llm, notes_text="Notes from Conrad:\n1. Sign off with Conrad.", **deps)
+    assert "Sign off with Conrad." in llm.calls[0]["user"]

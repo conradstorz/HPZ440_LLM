@@ -1,4 +1,4 @@
-# Jarvis (Phase 1: Observe)
+# Jarvis (Phase 1: Observe, Phase 1.5: Converse)
 
 Jarvis reads new Gmail with a read-only credential, archives every message as an immutable knowledge object, classifies it with the local model, searches earlier mail for evidence, prepares a reply draft and a proposed inbox action, and shows a grouped briefing. It takes no outbound action: nothing is sent, labelled, archived, or deleted in Gmail. The permission stage is 1 (Observe) as defined in `JARVIS_Home_Assistant_Reference.md`; drafts and proposed actions are shown so their quality can be judged, never executed.
 
@@ -11,9 +11,11 @@ Jarvis reads new Gmail with a read-only credential, archives every message as an
 /data/archive/<key>/nko-v0.json ...   one directory per message; v0 is the fact of record, never rewritten
 /data/archive/<key>/raw.eml           the original RFC 822 message
 /data/archive/<key>/attachments/      one file per attachment, named `<sha256 prefix>-<filename>`
-/data/journal/YYYY-MM-DD.jsonl        append-only event log: run, capture, classify, draft, correction, policy_reject, error
+/data/journal/YYYY-MM-DD.jsonl        append-only event log: run, capture, classify, draft, correction, note, tool_call, chat, policy_reject, error
 /data/index/mail.sqlite               full-text index; disposable, rebuilt from the archive
+/data/notes/notes.jsonl               append-only teaching notes; the latest version of each id wins
 /data/secrets/token.json              Gmail refresh token, read-only scope
+/data/secrets/agent_token             bearer token for GTE's workspace agent on the workstation
 ```
 
 ## One-time Gmail setup
@@ -35,10 +37,94 @@ To revoke: remove the app at https://myaccount.google.com/permissions and delete
 - `pwsh -NoProfile -File scripts/jarvis-reindex.ps1` drops and rebuilds the search index from the archive. Safe at any time.
 - `pwsh -NoProfile -File scripts/health.ps1` now also checks `/health` on the Jarvis port.
 
+## Chat (Phase 1.5)
+
+Jarvis is also a chat model. In Open WebUI (`http://localhost:3000`) pick **jarvis** from the model list beside the raw
+llama.cpp model; Open WebUI reaches it at `http://jarvis:8090/v1` over the compose network. The raw model answers from
+nothing but its weights; Jarvis answers from your archive, and cites the message keys it used.
+
+What it can do: search and read your archived mail, show the briefing for any group, record a correction, read a
+document on your workstation through GTE's agent, and keep notes you teach it. Every one of those is a tool call that
+passes `jarvis/policy` first and is written to the journal as a `tool_call` event with its arguments, whether it
+succeeded, and the first 200 characters of its result. A whole turn is journaled as one `chat` event (steps taken,
+tools used, characters in and out, plus `tool_calls_skipped`, `overflow_retries` and `task_mode`). Open WebUI's chat
+id reaches the journal as `conversation_id` because
+`compose.yaml` sets `ENABLE_FORWARD_USER_INFO_HEADERS=true`; without it Open WebUI strips the header and every turn
+journals `None`.
+
+The loop executes at most three tool calls per step, dropping duplicates and anything past the cap with a `skipped`
+tool reply, because a 7B model asked one question can emit thirty calls in a single turn and their combined results
+overflow the context. Jarvis also detects Open WebUI's own generation prompts — chat titles, tags, follow-up
+questions, which begin `### Task:` — and answers them with one plain model call, no tools and no notes, so they
+neither run a Jarvis loop nor leave pending notes behind.
+
+What it cannot do: send, forward, label, archive, or delete mail; reach the internet; call a cloud model. The policy
+gate refuses those actions in code, not by prompt, and the reply says so plainly if you ask.
+
+`JARVIS_CONTEXT_TOKENS` is the context the agent budgets for (system prompt, transcript, tool results and tool
+schemas, leaving room for the reply); `compose.yaml` feeds it and llama.cpp's `--ctx-size` from the same
+`LLM_CONTEXT_SIZE`, so raising one raises both. A turn also stops after 90 seconds or six tool steps and answers
+with what it has.
+
+Two operator settings in Open WebUI matter:
+
+- Set the **Task Model** (Admin → Settings → Interface) to the raw llama.cpp model. Left on `jarvis`, every chat
+  title and tag generation costs a second model call on the same GPU; Jarvis recognises those prompts and answers
+  them without tools, but the raw model does the job faster and keeps them out of the chat journal entirely.
+- On an existing Open WebUI volume the persisted connection list wins over `OPENAI_API_BASE_URLS`. If `jarvis` is
+  missing from the model list, add the connection `http://jarvis:8090/v1` (any key) in Admin → Settings →
+  Connections.
+
+### Teaching it
+
+Say "remember: invoices from Acme are always mine" and the note is saved active at once. State a preference any other
+way and Jarvis proposes the note, asks "Save this note? (yes/no)", and saves it only after you say yes. Until then the
+note is **pending** and reaches no prompt: pending notes are never injected into chat, classification, or drafts, and
+a pending note nobody confirms is retired automatically after a day.
+
+Active notes are injected into the system prompt for chat and into the classify and draft prompts for every message in
+the next run, so teaching Jarvis a triage rule changes the next briefing.
+
+`http://localhost:8090/notes` lists every note by status (active, pending, retired) with its id, version, what it
+applies to, and where it came from. Each active or pending note has a Retire form; a reason is required and is stored
+with the note. The Pending section also has a **Retire all pending** form, for when a stray turn has left a pile of
+proposals behind; there the reason is optional. Retiring writes a new version, it does not delete: the note's history
+stays in `notes.jsonl`.
+
+### Workstation documents
+
+Document tools read files on this Windows workstation through GTE's passive agent. Jarvis always initiates; the agent
+never calls into the HPZ440.
+
+1. Set `JARVIS_WORKSPACE_AGENT_URL` in `.env` to the workstation's tailnet address and the agent's port, for example
+   `http://100.x.y.z:8765`. Left empty, the document tools stay registered but every call answers that no workspace
+   agent is configured.
+2. Put the agent's bearer token in `C:\Users\<you>\.jarvis\agent_token` (one line, no quotes). It stays on the
+   workstation; only the copy under `/data/secrets/` reaches the host.
+3. Run `pwsh -NoProfile -File scripts/jarvis-agent-token.ps1`. It copies the token to `/data/secrets/agent_token` on
+   the host at mode 600 and never prints it.
+4. Run `pwsh -NoProfile -File scripts/start.ps1` to restart with the new URL.
+
+The token is read from disk on each request, not at startup, so the service starts fine before the token exists;
+`list_documents` and `read_document` simply report that the agent is unavailable. Nothing read this way is archived.
+
+### Live check
+
+Date: 2026-09-30, first deploy of the Converse branch. Through the `jarvis` model endpoint (`POST /v1/chat/completions`, non-stream, from the workstation):
+
+- "How many archived messages need my decision?" produced one `briefing` tool call and a correct count with message keys in 8 s. Journal: one `tool_call` (ok), one `chat` event with `steps: 1`.
+- "remember: this is a live-check note ..." produced one `propose_note` call; the note landed active on `/notes` with `source: explicit` and was retired from the page afterwards.
+- Zero `policy_reject` events across both turns.
+- Open WebUI on the existing volume had the single llama.cpp URL persisted in its database, so the two connection rows (`openai.api_base_urls`, `openai.api_keys`) were updated in place before the restart; `jarvis` then appeared in its model list without touching the Admin UI.
+- Not yet exercised: a proposed-then-confirmed note from inside Open WebUI, and workstation documents (no `JARVIS_WORKSPACE_AGENT_URL` set yet).
+- First Open WebUI session found two defects, both fixed the same day: the persona let the model deny having Gmail access (it now names the mail tools and forbids that denial; "show me my recent messages" answers in 7 s), and the model could emit 30 to 40 tool calls in one response and overflow the context (now at most 3 per step, deduplicated, with a tighter token estimate and one overflow retry). Open WebUI's title and tag prompts had also been reaching Jarvis and creating junk pending notes; Jarvis now answers those `### Task:` prompts without tools, the Task Model was pointed at the raw llama.cpp model, and the junk notes were retired in bulk from `/notes`.
+
 ## Guarantees enforced in code
 
 - The OAuth token is requested with `gmail.readonly` only, and the client refuses to start if the stored token carries any other scope.
-- `jarvis/policy` allows exactly `read, archive_copy, classify, search, suggest, draft`. Model output is filtered: any `tool_calls`, `function_call`, `send`, `forward`, `delete`, `label`, `modify`, or `action` key is dropped and journaled as `policy_reject`.
+- `jarvis/policy` allows exactly ten actions: `read`, `archive_copy`, `classify`, `search`, `suggest`, `draft`, `correct`, `notes_read`, `notes_write`, `documents_read`. Chat can reach `correct`, `notes_write`, and `documents_read` as well as the read-only ones, so a conversation can reclassify a message, save or retire a note, and read a workstation file — and nothing else. Every tool call is gated before it runs: an unknown tool name, non-JSON arguments, or an action outside that list is journaled as `policy_reject` and never executed. Allowed calls are journaled as `tool_call` with the arguments the model sent, whether the call succeeded, and the first 200 characters of the result.
+- Model output is filtered too: any `tool_calls`, `function_call`, `send`, `forward`, `delete`, `label`, `modify`, or `action` key in a classification or draft is dropped and journaled as `policy_reject`.
+- A note is saved active only when your own message in that turn contains remember, rule, from now on, always, or never. A model that asks for an explicit note without those words — including one talked into it by text inside a message or a document — gets a pending note that reaches no prompt until you say yes.
 - Message bodies are passed to the model as untrusted data; the system prompt says so, and the policy filter applies regardless.
 - Versions are written atomically and never overwritten.
 
@@ -46,6 +132,9 @@ To revoke: remove the app at https://myaccount.google.com/permissions and delete
 
 - The briefing's forms carry no CSRF token. Accepted: the service is LAN-only, unauthenticated by design, and never takes an outbound action.
 - Message text is fenced as untrusted data in the prompt, but the fence itself is not escaped. A hostile message can at worst mis-group itself or produce a draft that is displayed and never sent.
+- The chat endpoint (`/v1/chat/completions`) carries no auth, like the rest of the service. Anything on the LAN that
+  can reach port 8090 can read your mail through it. LAN only; the hardening phase in `roadmap.md` owns this.
+- A pending note expires after a day. If you meant to say yes and did not, state the rule again.
 - A large backlog is drained 50 messages per run, not all at once; trigger repeated runs, or raise `JARVIS_MAX_MESSAGES_PER_RUN`, to catch up. Gmail's per-user quota is the real ceiling.
 
 ## Tests
@@ -76,4 +165,4 @@ Classification quality has not yet been judged: no corrections have been submitt
 
 ## Not in this phase
 
-Sending or modifying mail, cloud models, scheduled polling, calendar or document sources, the GTE workspace agent, auth on the briefing, NAS storage. See `roadmap.md`.
+Sending or modifying mail, cloud models, scheduled polling, calendar sources, auth on the briefing or the chat endpoint, NAS storage. See `roadmap.md`. Phase 1.5 added chat, teaching notes, and read-only workstation documents; the rest of this list is unchanged.

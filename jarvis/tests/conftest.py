@@ -49,3 +49,20 @@ def store(data_dir: Path) -> Store:
 @pytest.fixture
 def fake_llm() -> FakeLLM:
     return FakeLLM()
+
+
+class FakeWorkspace:
+    """Stands in for WorkspaceClient: no HTTP, no token, deterministic listings."""
+
+    def __init__(self, docs=None, text="hello doc"):
+        self.docs = docs if docs is not None else [{"name": "notes.md", "folder": "C:/Docs", "size": 9, "mtime": "2026-09-30T00:00:00", "sha256": "abc123def456" + "0" * 52}]
+        self.text = text
+        self.calls = []
+
+    def list_documents(self, glob="*"):
+        self.calls.append(("list", glob))
+        return self.docs
+
+    def read_document(self, sha256):
+        self.calls.append(("read", sha256))
+        return self.docs[0], self.text

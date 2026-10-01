@@ -9,6 +9,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from jarvis.core.nko import GROUPS, NKO, NKOStatus, effective_group, sender_address, sender_domain, utcnow
 from jarvis.core.store import Store
 from jarvis.journal import Journal, JournalEvent
+from jarvis.notes import Note
 
 GROUP_TITLES = {
     "needs_decision": "Needs your decision",
@@ -43,6 +44,9 @@ class Briefing:
 
     def render_message(self, nko: NKO, versions: list[NKO], events: list[JournalEvent]) -> str:
         return self._env.get_template("message.html").render(nko=nko, versions=versions, events=events)
+
+    def render_notes(self, notes: list[Note]) -> str:
+        return self._env.get_template("notes.html").render(notes=notes)
 
     def apply_correction(self, dedup_key: str, to_group: str, note: str | None) -> NKO:
         if to_group not in GROUPS:

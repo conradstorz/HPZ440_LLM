@@ -1,10 +1,11 @@
-"""The permission gate. Phase 1 (Observe): read, archive, classify, search, suggest, draft. Nothing outbound."""
+"""The permission gate. Phase 1/1.5: read, archive, classify, search, suggest, draft, correct, notes, documents. Nothing outbound."""
 
 from __future__ import annotations
 
 from jarvis.journal import Journal, JournalEvent
 
-ALLOWED = frozenset({"read", "archive_copy", "classify", "search", "suggest", "draft"})
+ALLOWED = frozenset({"read", "archive_copy", "classify", "search", "suggest", "draft",
+                     "correct", "notes_read", "notes_write", "documents_read"})
 
 # Keys a model response may not carry: anything shaped like a tool call or an outbound verb.
 FORBIDDEN_KEYS = frozenset({"tool_calls", "function_call", "action", "send", "forward", "delete", "label", "modify"})

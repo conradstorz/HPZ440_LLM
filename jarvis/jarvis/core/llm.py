@@ -3,19 +3,58 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import Any, Protocol
 
 import httpx
+from pydantic import BaseModel, Field
 
 
 class LLMError(Exception):
     pass
 
 
+def _timeout_kw(timeout: float | None) -> dict:
+    """httpx treats an explicit timeout=None as "wait forever", so pass nothing and keep the client default."""
+    return {} if timeout is None else {"timeout": timeout}
+
+
+class ToolCall(BaseModel):
+    id: str
+    name: str
+    arguments: dict
+
+
+class ChatTurn(BaseModel):
+    content: str | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    finish_reason: str = "stop"
+
+
 class LLMClient(Protocol):
     model_name: str
 
     def complete_json(self, system: str, user: str, schema: dict, *, max_tokens: int = 1024) -> dict: ...
+    def chat(self, messages: list[dict], tools: list[dict] | None = None, *, max_tokens: int = 1024,
+             timeout: float | None = None) -> ChatTurn: ...
+    def chat_stream(self, messages: list[dict], *, max_tokens: int = 1024, timeout: float | None = None) -> Iterator[str]: ...
+
+
+def _parse_tool_calls(raw: list | None) -> list[ToolCall]:
+    out: list[ToolCall] = []
+    for i, tc in enumerate(raw or []):
+        fn = (tc or {}).get("function") or {}
+        args_text = fn.get("arguments")
+        if isinstance(args_text, dict):
+            args: dict = args_text
+        else:
+            try:
+                parsed = json.loads(args_text or "{}")
+                args = parsed if isinstance(parsed, dict) else {"_raw": args_text}
+            except (TypeError, ValueError):
+                args = {"_raw": str(args_text)}
+        out.append(ToolCall(id=tc.get("id") or f"call_{i}", name=str(fn.get("name") or ""), arguments=args))
+    return out
 
 
 class LlamaCppClient:
@@ -59,14 +98,65 @@ class LlamaCppClient:
         except httpx.HTTPError:
             return False
 
+    def _post(self, body: dict, timeout: float | None = None) -> httpx.Response:
+        try:
+            # httpx reads timeout=None as "no timeout at all", so only override the client default when asked.
+            resp = self._client.post(f"{self.base_url}/v1/chat/completions", json=body, **_timeout_kw(timeout))
+            resp.raise_for_status()
+            return resp
+        except httpx.HTTPStatusError as e:
+            raise LLMError(f"HTTP {e.response.status_code}: {e.response.text[:300]}") from e
+        except httpx.HTTPError as e:
+            raise LLMError(str(e)) from e
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None, *, max_tokens: int = 1024,
+             timeout: float | None = None) -> ChatTurn:
+        body: dict[str, Any] = {"model": self.model_name, "messages": messages, "temperature": 0, "max_tokens": max_tokens}
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+        resp = self._post(body, timeout)
+        try:
+            choice = resp.json()["choices"][0]
+            msg = choice["message"]
+            return ChatTurn(content=msg.get("content"), tool_calls=_parse_tool_calls(msg.get("tool_calls")),
+                            finish_reason=choice.get("finish_reason") or "stop")
+        except (KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
+            raise LLMError(f"{type(e).__name__}: {e}") from e
+
+    def chat_stream(self, messages: list[dict], *, max_tokens: int = 1024, timeout: float | None = None) -> Iterator[str]:
+        body = {"model": self.model_name, "messages": messages, "temperature": 0, "max_tokens": max_tokens, "stream": True}
+        try:
+            with self._client.stream("POST", f"{self.base_url}/v1/chat/completions", json=body, **_timeout_kw(timeout)) as resp:
+                if resp.status_code >= 400:
+                    raise LLMError(f"HTTP {resp.status_code}: {resp.read()[:300]!r}")
+                for line in resp.iter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        return
+                    try:
+                        delta = json.loads(data)["choices"][0].get("delta") or {}
+                    except (KeyError, IndexError, ValueError, TypeError, AttributeError) as e:
+                        raise LLMError(f"bad stream chunk: {e}") from e
+                    if delta.get("content"):
+                        yield delta["content"]
+        except httpx.HTTPError as e:
+            raise LLMError(str(e)) from e
+
 
 class FakeLLM:
-    """Returns queued responses in order. An Exception instance in the queue is raised."""
+    """Queued responses in order. An Exception instance in a queue is raised when reached."""
 
-    def __init__(self, responses: list[Any] | None = None, model_name: str = "fake") -> None:
+    def __init__(self, responses: list[Any] | None = None, model_name: str = "fake", *,
+                 turns: list[Any] | None = None, stream_chunks: list[str] | None = None) -> None:
         self.responses = list(responses or [])
+        self.turns = list(turns or [])
+        self.stream_chunks = list(stream_chunks or [])
         self.model_name = model_name
         self.calls: list[dict] = []
+        self.chat_calls: list[dict] = []
 
     def complete_json(self, system: str, user: str, schema: dict, *, max_tokens: int = 1024) -> dict:
         self.calls.append({"system": system, "user": user, "schema": schema})
@@ -76,3 +166,17 @@ class FakeLLM:
         if isinstance(r, Exception):
             raise r
         return r
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None, *, max_tokens: int = 1024,
+             timeout: float | None = None) -> ChatTurn:
+        self.chat_calls.append({"messages": [dict(m) for m in messages], "tools": tools, "timeout": timeout})
+        if not self.turns:
+            raise LLMError("FakeLLM has no queued turn")
+        t = self.turns.pop(0)
+        if isinstance(t, Exception):
+            raise t
+        return t
+
+    def chat_stream(self, messages: list[dict], *, max_tokens: int = 1024, timeout: float | None = None) -> Iterator[str]:
+        self.chat_calls.append({"messages": [dict(m) for m in messages], "tools": None, "stream": True, "timeout": timeout})
+        yield from self.stream_chunks

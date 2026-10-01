@@ -19,8 +19,9 @@ class Index:
         self._store = store
         self.path = Path(data_dir) / "index" / "mail.sqlite"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # The web app builds Index on the main thread and calls it from request worker threads. Safe because
-        # /run is serialised by web.py's run_lock and no other route touches the index.
+        # The web app builds Index on the main thread and calls it from request worker threads: /run writes,
+        # and chat's search_mail tool reads from request threads too. Safe because SQLite is built in
+        # serialized threading mode here and /run, serialised by web.py's run_lock, is the only writer.
         try:
             self._conn = sqlite3.connect(self.path, check_same_thread=False)
             stale = self._conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION

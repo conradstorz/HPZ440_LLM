@@ -1,4 +1,4 @@
-"""FastAPI surface: briefing, corrections, run trigger, message history, health. LAN only, no auth."""
+"""FastAPI surface: briefing, corrections, run trigger, message history, notes, chat, health. LAN only, no auth."""
 
 from __future__ import annotations
 
@@ -13,12 +13,17 @@ from jarvis.core.nko import effective_group
 from jarvis.core.run import RunSummary
 from jarvis.core.store import Store
 from jarvis.journal import Journal, JournalEvent
+from jarvis.notes import Notes
+from jarvis.openai_api import Responder, openai_router
 
 
 def create_app(*, store: Store, journal: Journal, briefing: Briefing, run: Callable[[], RunSummary],
-               llm_reachable: Callable[[], bool]) -> FastAPI:
+               llm_reachable: Callable[[], bool], notes: Notes | None = None,
+               respond: Responder | None = None) -> FastAPI:
     app = FastAPI(title="Jarvis", docs_url=None, redoc_url=None)
     run_lock = threading.Lock()
+    if respond is not None:
+        app.include_router(openai_router(respond))
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -62,6 +67,26 @@ def create_app(*, store: Store, journal: Journal, briefing: Briefing, run: Calla
             raise HTTPException(404, "unknown message")
         return briefing.render_message(versions[-1], versions, journal.events_for(dedup_key))
 
+    if notes is not None:
+        @app.get("/notes", response_class=HTMLResponse)
+        def notes_page() -> str:
+            return briefing.render_notes(notes.all_latest())
+
+        @app.post("/notes/retire")
+        def retire_note(note_id: str = Form(...), reason: str = Form(...)) -> RedirectResponse:
+            try:
+                notes.retire(note_id, reason.strip() or "retired from the notes page")
+            except KeyError:
+                raise HTTPException(404, "unknown note")
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            return RedirectResponse("/notes", status_code=303)
+
+        @app.post("/notes/retire-pending")
+        def retire_pending(reason: str = Form("retired in bulk")) -> RedirectResponse:
+            notes.retire_all_pending(reason.strip() or "retired in bulk")
+            return RedirectResponse("/notes", status_code=303)
+
     @app.get("/health")
     def health() -> JSONResponse:
         last = journal.last_run()
@@ -72,9 +97,9 @@ def create_app(*, store: Store, journal: Journal, briefing: Briefing, run: Calla
 
 
 def app_factory() -> FastAPI:
-    """Production entry point (uvicorn --factory). Completed in the pipeline task."""
+    """Production entry point (uvicorn --factory)."""
     from jarvis.pipeline import build_runtime
 
     rt = build_runtime()
     return create_app(store=rt.store, journal=rt.journal, briefing=rt.briefing, run=rt.run_once,
-                      llm_reachable=rt.llm.is_reachable)
+                      llm_reachable=rt.llm.is_reachable, notes=rt.notes, respond=rt.respond)

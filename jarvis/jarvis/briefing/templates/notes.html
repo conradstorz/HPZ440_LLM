@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Notes · Jarvis{% endblock %}
+{% block body %}
+<h2>Notes Jarvis has been taught</h2>
+<p class="meta">Active notes shape chat, classification, and drafts. Pending notes wait for your yes in chat and expire after a day.</p>
+{% for status in ["active", "pending", "retired"] %}
+<h3>{{ status|capitalize }}</h3>
+{% if status == "pending" %}<form method="post" action="/notes/retire-pending" class="inline">
+  <input type="text" name="reason" placeholder="why (optional)" size="24">
+  <button type="submit">Retire all pending</button></form>{% endif %}
+{% set items = notes|selectattr("status", "equalto", status)|list %}
+{% for n in items %}
+<div class="card"><code>{{ n.id }}</code> · v{{ n.version }} · {{ n.applies_to }} · {{ n.source }} · {{ n.created_at.strftime('%Y-%m-%d %H:%M') }}
+  <div>{{ n.text }}</div>
+  {% if n.reason %}<div class="meta">Reason: {{ n.reason }}</div>{% endif %}
+  {% if status != "retired" %}<form method="post" action="/notes/retire" class="inline">
+    <input type="hidden" name="note_id" value="{{ n.id }}"><input type="text" name="reason" placeholder="why" size="24" required>
+    <button type="submit">Retire</button></form>{% endif %}
+</div>
+{% else %}<p class="meta">None.</p>{% endfor %}
+{% endfor %}
+{% endblock %}

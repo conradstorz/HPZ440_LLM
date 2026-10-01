@@ -68,4 +68,9 @@ Assert-FileContains 'scripts/health.ps1' 'JARVIS_HOST_PORT'
 Assert-FileNotContains 'scripts/jarvis-auth.ps1' 'gmail\.modify'
 Assert-FileNotContains 'scripts/jarvis-auth.ps1' 'gmail\.send'
 
+Assert-FileContains 'scripts/jarvis-agent-token.ps1' 'Copy \.env\.example to \.env'
+Assert-FileContains 'scripts/jarvis-agent-token.ps1' 'HOST_JARVIS_DATA_DIR'
+Assert-FileContains 'scripts/jarvis-agent-token.ps1' '/data/secrets/agent_token'
+Assert-FileContains 'scripts/jarvis-agent-token.ps1' 'sh -e -c'
+
 Write-Host 'Script contract checks passed.'
