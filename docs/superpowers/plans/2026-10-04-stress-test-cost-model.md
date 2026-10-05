@@ -1072,12 +1072,34 @@ def stub_server():
     server.server_close()
 
 
+def _shares_long_run(a: str, b: str, run: int = 200) -> bool:
+    """Does any 200-character window of a appear anywhere in b?"""
+    return any(a[i : i + run] in b for i in range(0, len(a) - run, run))
+
+
 def test_build_prompt_is_distinct_per_seed():
     a = load.build_prompt(0, 1000)
     b = load.build_prompt(1, 1000)
     assert a != b
-    # The first 50 characters must already differ, or the slots share a cache prefix.
     assert a[:50] != b[:50]
+
+
+def test_build_prompt_shares_no_long_run_between_seeds():
+    """The property that makes the prefill measurement real.
+
+    A differing opening is not enough. Two prompts sharing a long body let
+    llama.cpp serve almost the whole prefill from cache -- measured at 99.9%,
+    inflating the reported prefill rate 24x.
+    """
+    a = load.build_prompt(0, 1000)
+    b = load.build_prompt(1, 1000)
+    assert not _shares_long_run(a, b)
+    assert not _shares_long_run(b, a)
+
+
+def test_build_prompt_is_deterministic():
+    """The same sweep point must be rerunnable and comparable."""
+    assert load.build_prompt(7, 1000) == load.build_prompt(7, 1000)
 
 
 def test_build_prompt_is_roughly_the_requested_length():
@@ -1187,8 +1209,9 @@ Three details decide whether the numbers mean anything:
 
 * ignore_eos with a fixed max_tokens, so every request emits an identical token
   count. Without it you measure the model's verbosity.
-* A distinct prompt per client, so llama.cpp's prefix cache cannot serve one
-  slot's prefill from another's.
+* A prompt per client that shares no long run of text with any other, so llama.cpp's
+  cache cannot serve one slot's prefill from another's. A varying head on a shared
+  body fails this: measured 99.9% cached and a 24x inflated prefill rate.
 * Streaming, so time to first token is observable at all.
 """
 
@@ -1197,6 +1220,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import random
 import sys
 import time
 
@@ -1204,20 +1228,37 @@ import httpx
 
 from bench.metrics import RequestSample, summarize
 
-# Deterministic filler with a distinct opening per seed. Real English keeps the
-# tokenizer honest; a repeated single character would not tokenize realistically.
-_FILLER = (
-    "The HPZ440 serves a quantized instruct model over a local network for a single "
-    "household operator who cares about latency, privacy, and the electricity bill. "
-)
+# Ordinary words, so the tokenizer behaves as it would on real text; a repeated
+# single character would not. The body is drawn from the seed rather than being a
+# fixed string, which matters more than it looks: see build_prompt.
+_WORDS = (
+    "server model token latency cache prompt decode prefill throughput slot context "
+    "window kernel memory bandwidth quantize weight tensor batch stream request reply "
+    "inbox message draft classify archive journal policy gate agent briefing household "
+    "electricity meter amortize capex median listing provider hosted rented owned"
+).split()
 
 
 def build_prompt(seed: int, approx_tokens: int) -> str:
-    """A prompt of roughly approx_tokens tokens, unique from its first characters."""
-    head = f"Request variant {seed} ({seed * 7919}). Summarize the following notes. "
+    """A prompt of ~approx_tokens tokens sharing no long run of text with any other seed.
+
+    Every word comes from the seed, not just an opening line. A varying head on a
+    fixed body is NOT enough, and the difference is not subtle: measured against this
+    server on 2026-10-05, prompts built that way were served 99.9% from llama.cpp's
+    cache across two clients and reported a prefill rate of 55,934 tok/s against a
+    real 2,340 -- a 24x fiction. Seed-derived bodies measured 4.2% cached.
+
+    Deterministic in the seed, so a rerun of the same sweep point is comparable.
+    """
+    rng = random.Random(seed)
     target_chars = approx_tokens * 4
-    body = _FILLER * (target_chars // len(_FILLER) + 1)
-    return (head + body)[:target_chars]
+    parts = [f"Note {rng.randrange(10 ** 9)}. Summarize these notes."]
+    size = len(parts[0])
+    while size < target_chars:
+        word = rng.choice(_WORDS)
+        parts.append(word)
+        size += len(word) + 1
+    return " ".join(parts)[:target_chars]
 
 
 async def one_request(
@@ -1362,7 +1403,7 @@ if __name__ == "__main__":
 - [ ] **Step 9: Run the whole suite to verify it passes**
 
 Run: `uv run pytest -v` from `bench/`
-Expected: PASS, 33 passed (11 in `test_cost.py`, 10 in `test_prices.py`, 8 in `test_metrics.py`, 4 in `test_load.py`).
+Expected: PASS, 35 passed (11 in `test_cost.py`, 10 in `test_prices.py`, 8 in `test_metrics.py`, 6 in `test_load.py`).
 
 If `test_one_request_measures_ttft_and_usage` fails on `ttft_ms`, the stub's chunked framing is at fault, not `load.py` — check that each SSE event is written as its own HTTP chunk and flushed.
 

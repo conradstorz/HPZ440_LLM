@@ -56,7 +56,7 @@ behaviour, permissions, or data.
 | Load generator | **Python `bench/` package, PowerShell wrapper** | Eight concurrent SSE streams with per-request TTFT needs real async I/O. `uv` is already the project's Python runner. The wrapper keeps the repo's `scripts/*.ps1` entry-point convention and `.env` parsing. |
 | Server mutation | **Rewrite `.env`, restart, restore** | A compose override file is cleaner in isolation but adds a second source of truth for ports and model path. The sweep is an operator-run, foreground, minutes-long job; a restore in `finally` is adequate. |
 | Fixed output length | **`max_tokens` + `"ignore_eos": true`** | Every request must emit an identical token count or throughput is confounded with verbosity. |
-| Prompt uniqueness | **Distinct prompt per client** | Identical prompts share a cached prefix across slots and inflate prefill. |
+| Prompt uniqueness | **Every word of the prompt derived from a per-client seed** | Identical prompts share a cached prefix across slots and inflate prefill. A varying head on a shared body is not enough: measured 2026-10-05, such prompts were served 99.9% from cache across two clients and reported 55,934 prefill tok/s against a real 2,340. |
 | Endpoint | **`http://hpz440:8080`** | A tunnel multiplexes 8 streams over one TCP connection and becomes the bottleneck. Port 8080 is the inference service; 8090 is the Jarvis agent and silently drops `tools`. |
 | Context-length scaling | **Out of scope** | Prompt length is fixed at one representative value. Sweeping both slots and context doubles the matrix for a question nobody asked. |
 
@@ -96,7 +96,7 @@ For each `N` in `1, 2, 4, 8`:
 3. Sample GPU telemetry at 1 Hz in a throwaway container for 20 s with no load — the **idle
    baseline**.
 4. Fire `N` concurrent streaming clients. Each client issues **5 sequential requests**, each
-   with a distinct ~1000-token prompt and a fixed `max_tokens` of 300 with `ignore_eos`. The
+   with a seed-derived ~1000-token prompt sharing no long run with any other and a fixed `max_tokens` of 300 with `ignore_eos`. The
    first request per client is discarded as warm-up, leaving `N x 4` latency samples — enough
    for a p95 even at `N = 1`.
 5. Sample GPU telemetry at 1 Hz throughout, in parallel with the load.
