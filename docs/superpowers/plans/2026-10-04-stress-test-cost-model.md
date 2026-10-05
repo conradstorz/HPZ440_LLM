@@ -449,8 +449,16 @@ The loader refuses prices that lack a source and a date. That is the mechanism t
 - Consumes: nothing from earlier tasks.
 - Produces, in `bench/bench/prices.py`:
   - `@dataclass(frozen=True) HostedPrice` with fields `provider: str`, `model: str`, `usd_per_mtok_in: float`, `usd_per_mtok_out: float`, `source_url: str`, `retrieved: str`
-  - `@dataclass(frozen=True) HardwarePrice` with fields `name: str`, `usd: float`, `decode_tps_7b_q4: float | None`, `source_url: str`, `retrieved: str`, `measured_here: bool`
-  - `load_prices(path: Path | str) -> tuple[list[HostedPrice], list[HardwarePrice]]` — raises `ValueError` naming the offending entry if any record is missing `source_url` or `retrieved`, or if `retrieved` is not `YYYY-MM-DD`.
+  - `@dataclass(frozen=True) HardwarePrice` with fields `name: str`, `usd: float`, `decode_tps_7b_q4: float | None`, `price_source: str`, `price_note: str`, `benchmark_source: str`, `retrieved: str`, `measured_here: bool`
+  - `load_prices(path: Path | str) -> tuple[list[HostedPrice], list[HardwarePrice]]` — raises `ValueError` naming the offending entry if provenance is missing or `retrieved` is not a real `YYYY-MM-DD` calendar date.
+
+**Why a hardware row needs two provenance fields.** A hosted row's input and output price both
+appear on one pricing page, so one `source_url` cites both honestly. A hardware row carries two
+independently sourced facts — a retail price and a decode tok/s figure — which never come from
+the same page. One field cannot cite both: the first implementation attempt cited a 4090's
+price to a benchmark blog that contained no price at all. So `price_source` cites the `usd`
+figure, `benchmark_source` cites `decode_tps_7b_q4`, and `price_note` says how to read the
+price, because "the" price of a GPU is not a single number. Conrad's decision, 2026-10-05.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -481,7 +489,9 @@ GOOD = {
             "name": "RTX 3060 12GB",
             "usd": 300.0,
             "decode_tps_7b_q4": 61.9,
-            "source_url": "https://example.invalid/bench",
+            "price_source": "Conrad's purchase, 2026-09-29",
+            "price_note": "purchase price paid",
+            "benchmark_source": "https://example.invalid/bench",
             "retrieved": "2026-10-04",
             "measured_here": True,
         }
@@ -501,6 +511,8 @@ def test_loads_well_formed_file(tmp_path):
     assert hosted[0].model == "Llama-3.1-8B-Instruct"
     assert hosted[0].usd_per_mtok_out == 0.18
     assert hardware[0].measured_here is True
+    assert hardware[0].price_source == "Conrad's purchase, 2026-09-29"
+    assert hardware[0].benchmark_source == "https://example.invalid/bench"
 
 
 def test_rejects_hosted_entry_without_source(tmp_path):
@@ -510,16 +522,49 @@ def test_rejects_hosted_entry_without_source(tmp_path):
         prices.load_prices(_write(tmp_path, payload))
 
 
-def test_rejects_hardware_entry_without_source(tmp_path):
+def test_rejects_hardware_entry_without_price_source(tmp_path):
     payload = json.loads(json.dumps(GOOD))
-    payload["hardware"][0]["source_url"] = ""
-    with pytest.raises(ValueError, match="RTX 3060"):
+    payload["hardware"][0]["price_source"] = ""
+    with pytest.raises(ValueError, match="price_source"):
+        prices.load_prices(_write(tmp_path, payload))
+
+
+def test_rejects_throughput_figure_without_its_own_source(tmp_path):
+    """A tok/s number must cite the page that states it, not the price's page."""
+    payload = json.loads(json.dumps(GOOD))
+    del payload["hardware"][0]["benchmark_source"]
+    with pytest.raises(ValueError, match="benchmark_source"):
+        prices.load_prices(_write(tmp_path, payload))
+
+
+def test_allows_missing_benchmark_source_when_there_is_no_figure(tmp_path):
+    """decode_tps_7b_q4 null means the figure could not be sourced; that is allowed."""
+    payload = json.loads(json.dumps(GOOD))
+    payload["hardware"][0]["decode_tps_7b_q4"] = None
+    del payload["hardware"][0]["benchmark_source"]
+    _hosted, hardware = prices.load_prices(_write(tmp_path, payload))
+    assert hardware[0].decode_tps_7b_q4 is None
+    assert hardware[0].benchmark_source == ""
+
+
+def test_rejects_whitespace_only_source(tmp_path):
+    payload = json.loads(json.dumps(GOOD))
+    payload["hosted"][0]["source_url"] = "   "
+    with pytest.raises(ValueError, match="source_url"):
         prices.load_prices(_write(tmp_path, payload))
 
 
 def test_rejects_malformed_retrieved_date(tmp_path):
     payload = json.loads(json.dumps(GOOD))
     payload["hosted"][0]["retrieved"] = "Oct 2026"
+    with pytest.raises(ValueError, match="retrieved"):
+        prices.load_prices(_write(tmp_path, payload))
+
+
+def test_rejects_impossible_retrieved_date(tmp_path):
+    """Right shape, no such day. A regex alone would let this through."""
+    payload = json.loads(json.dumps(GOOD))
+    payload["hosted"][0]["retrieved"] = "2026-02-30"
     with pytest.raises(ValueError, match="retrieved"):
         prices.load_prices(_write(tmp_path, payload))
 
@@ -552,11 +597,9 @@ recalled from memory cannot reach the writeup.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
-
-_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 @dataclass(frozen=True)
@@ -574,17 +617,31 @@ class HardwarePrice:
     name: str
     usd: float
     decode_tps_7b_q4: float | None
-    source_url: str
+    price_source: str
+    price_note: str
+    benchmark_source: str
     retrieved: str
     measured_here: bool
 
 
-def _check_provenance(record: dict, label: str) -> None:
-    if not record.get("source_url"):
-        raise ValueError(f"{label}: missing source_url. Fetch the price, do not recall it.")
-    retrieved = record.get("retrieved", "")
-    if not _DATE.match(str(retrieved)):
-        raise ValueError(f"{label}: retrieved must be YYYY-MM-DD, got {retrieved!r}")
+def _require(record: dict, field: str, label: str) -> str:
+    """A provenance field that must be present and not blank."""
+    value = str(record.get(field, "") or "").strip()
+    if not value:
+        raise ValueError(f"{label}: missing {field}. Cite where the number came from; do not recall it.")
+    return value
+
+
+def _check_retrieved(record: dict, label: str) -> str:
+    retrieved = str(record.get("retrieved", "") or "").strip()
+    try:
+        # Rejects both the wrong shape and a well-shaped impossible date like 2026-02-30.
+        date.fromisoformat(retrieved)
+    except ValueError:
+        raise ValueError(
+            f"{label}: retrieved must be a real YYYY-MM-DD date, got {retrieved!r}"
+        ) from None
+    return retrieved
 
 
 def load_prices(path: Path | str) -> tuple[list[HostedPrice], list[HardwarePrice]]:
@@ -593,30 +650,35 @@ def load_prices(path: Path | str) -> tuple[list[HostedPrice], list[HardwarePrice
     hosted: list[HostedPrice] = []
     for record in payload.get("hosted", []):
         label = f"{record.get('provider', '?')}/{record.get('model', '?')}"
-        _check_provenance(record, label)
         hosted.append(
             HostedPrice(
                 provider=record["provider"],
                 model=record["model"],
                 usd_per_mtok_in=float(record["usd_per_mtok_in"]),
                 usd_per_mtok_out=float(record["usd_per_mtok_out"]),
-                source_url=record["source_url"],
-                retrieved=record["retrieved"],
+                source_url=_require(record, "source_url", label),
+                retrieved=_check_retrieved(record, label),
             )
         )
 
     hardware: list[HardwarePrice] = []
     for record in payload.get("hardware", []):
         label = record.get("name", "?")
-        _check_provenance(record, label)
         decode = record.get("decode_tps_7b_q4")
+        # A throughput figure must name the page it came from; the price's own source is
+        # a separate field because the two never appear on the same page.
+        benchmark_source = (
+            "" if decode is None else _require(record, "benchmark_source", label)
+        )
         hardware.append(
             HardwarePrice(
                 name=record["name"],
                 usd=float(record["usd"]),
                 decode_tps_7b_q4=None if decode is None else float(decode),
-                source_url=record["source_url"],
-                retrieved=record["retrieved"],
+                price_source=_require(record, "price_source", label),
+                price_note=_require(record, "price_note", label),
+                benchmark_source=benchmark_source,
+                retrieved=_check_retrieved(record, label),
                 measured_here=bool(record.get("measured_here", False)),
             )
         )
@@ -632,11 +694,17 @@ Use WebSearch and WebFetch to obtain, **for each** of the following, the current
 - Together AI
 - DeepInfra
 
-And for each of these, the current retail price plus a published Qwen2.5-7B (or Llama-3-8B) Q4 decode tok/s figure:
+And for each of these, the current retail price plus a published Qwen2.5-7B (or Llama-3-8B) Q4 decode tok/s figure — **each from its own page, recorded in its own field**:
 
 - NVIDIA RTX 4090 (24GB)
 - Apple Mac mini M4 (16GB base)
 - NVIDIA DGX Spark
+
+For a card sold above its launch MSRP on the secondary market, record the **median of the
+listings you actually see**, cite the retailer page in `price_source`, and say so in
+`price_note` (for example `secondary-market median of 4 Newegg listings, $3,999-$5,199`).
+A single lowest-outlier listing presented as "the" price is a defect. Conrad's decision,
+2026-10-05.
 
 Rules:
 - Record the exact URL you read the number from, not a search-results page.
@@ -664,7 +732,9 @@ Then create `bench/bench/prices.json` with this exact shape, substituting the fe
       "name": "RTX 3060 12GB (this box)",
       "usd": 300.0,
       "decode_tps_7b_q4": 61.9,
-      "source_url": "benchmarks/benchmark-20260930-131153.json",
+      "price_source": "Conrad's purchase, 2026-09-29",
+      "price_note": "purchase price paid",
+      "benchmark_source": "benchmarks/benchmark-20260930-131153.json",
       "retrieved": "2026-09-30",
       "measured_here": true
     },
@@ -672,7 +742,9 @@ Then create `bench/bench/prices.json` with this exact shape, substituting the fe
       "name": "<other hardware>",
       "usd": 0.0,
       "decode_tps_7b_q4": null,
-      "source_url": "<exact page you read>",
+      "price_source": "<exact page stating the price>",
+      "price_note": "<MSRP | secondary-market median of N listings, $X-$Y | retail>",
+      "benchmark_source": "",
       "retrieved": "<YYYY-MM-DD>",
       "measured_here": false
     }
@@ -680,12 +752,15 @@ Then create `bench/bench/prices.json` with this exact shape, substituting the fe
 }
 ```
 
-The RTX 3060 row above is the only entry whose `source_url` is a repo path rather than a URL — it is the one row measured on this hardware, and `measured_here` is `true` to mark that.
+The RTX 3060 row is the only entry whose provenance is a purchase and a repo path rather than
+URLs — it is the one row measured on this hardware, and `measured_here` is `true` to mark that.
+`benchmark_source` is `""` exactly when `decode_tps_7b_q4` is `null`; whenever a figure is
+present its own page must be named.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_prices.py -v` from `bench/`
-Expected: PASS, 5 passed. `test_shipped_prices_file_is_valid` passing proves every committed price has a source and a date.
+Expected: PASS, 9 passed. `test_shipped_prices_file_is_valid` passing proves every committed price has a source and a date.
 
 - [ ] **Step 6: Commit**
 
@@ -1921,8 +1996,16 @@ how much.>
 
 ## Hardware comparison
 
-<A table from bench/prices.json's hardware entries: name, price, published 7B Q4 decode
-tok/s, tok/s per dollar, source. Mark the 3060 row as the measured one.>
+<A table from bench/bench/prices.json's hardware entries, one row each: name, price, how to
+read that price (`price_note`), published 7B Q4 decode tok/s, tok/s per dollar, and BOTH
+citations -- `price_source` for the price and `benchmark_source` for the throughput figure.
+Mark the 3060 row as the measured one. Leave the tok/s and tok/s-per-dollar cells empty for any
+row whose `decode_tps_7b_q4` is null rather than filling them with an estimate.>
+
+State plainly under that table which items could not be sourced and why, so a reader does not
+mistake the list for the whole market. As of 2026-10-05 that was Groq (no public price for a
+Llama-3.1-8B-class model) and the Mac mini M4 (discontinued from Apple's own storefront, with
+third-party listings spanning $449-$1099 and no defensible single figure).
 ````
 
 - [ ] **Step 10: Add the doc assertions and run the tests**
