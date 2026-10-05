@@ -122,6 +122,7 @@ Per sweep point, written to `benchmarks/stress-<stamp>.json`:
 | `aggregate_output_tps` | total generated tokens across clients / wall time of the round |
 | `per_client_output_tps` | aggregate / slots |
 | `prefill_tps` | summed `timings.prompt_n` / summed `timings.prompt_ms` |
+| `prompt_tokens_mean` | prompt tokens actually sent per request, as the tokenizer counted them -- the writeup quotes this rather than the requested size |
 | `ttft_ms_p50`, `ttft_ms_p95` | first SSE delta per request |
 | `latency_ms_p50`, `latency_ms_p95` | request start to final chunk |
 | `gpu_watts_idle`, `gpu_watts_mean`, `gpu_watts_max` | from the telemetry sampler |

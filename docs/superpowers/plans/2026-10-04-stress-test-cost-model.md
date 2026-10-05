@@ -851,6 +851,7 @@ def test_summarize_aggregate_throughput():
     out = summarize(samples, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
     assert out["aggregate_output_tps"] == pytest.approx(120.0)
     assert out["per_client_output_tps"] == pytest.approx(60.0)
+    assert out["prompt_tokens_mean"] == pytest.approx(1000.0)
     assert out["requests"] == 4
     assert out["slots"] == 2
     assert out["ctx_per_slot"] == 2048
@@ -978,6 +979,9 @@ def summarize(
         "wall_seconds": wall_seconds,
         "output_tokens_total": output_total,
         "prompt_tokens_total": prompt_total,
+        # What was actually sent, not what was requested. The writeup quotes this,
+        # because a requested prompt size is an estimate until the tokenizer sees it.
+        "prompt_tokens_mean": prompt_total / len(samples),
         "aggregate_output_tps": aggregate_tps,
         "per_client_output_tps": aggregate_tps / slots,
         "prefill_tps": prefill_tps,
@@ -1104,8 +1108,10 @@ def test_build_prompt_is_deterministic():
 
 def test_build_prompt_is_roughly_the_requested_length():
     prompt = load.build_prompt(0, 1000)
-    # ~4 characters per token is the usual rule of thumb; allow a wide band.
-    assert 2000 < len(prompt) < 6000
+    # Sized by the measured 6.55 chars/token, so 1000 tokens is ~6550 characters.
+    # The live check that this lands near 1000 real tokens is the server's tokenizer,
+    # not this test; this only pins that the calibration is being applied at all.
+    assert 6200 < len(prompt) < 6900
 
 
 def test_one_request_measures_ttft_and_usage(stub_server):
@@ -1238,6 +1244,12 @@ _WORDS = (
     "electricity meter amortize capex median listing provider hosted rented owned"
 ).split()
 
+# Measured on this model's tokenizer via the server's /tokenize endpoint on
+# 2026-10-05: 6.21 chars/token at 250 requested tokens, settling to 6.56-6.58 from
+# 1000 upward. The naive 4.0 used before made --prompt-tokens 1000 send only 610
+# tokens, a 39% undershoot that would have mislabelled every row of the writeup.
+_CHARS_PER_TOKEN = 6.55
+
 
 def build_prompt(seed: int, approx_tokens: int) -> str:
     """A prompt of ~approx_tokens tokens sharing no long run of text with any other seed.
@@ -1251,7 +1263,7 @@ def build_prompt(seed: int, approx_tokens: int) -> str:
     Deterministic in the seed, so a rerun of the same sweep point is comparable.
     """
     rng = random.Random(seed)
-    target_chars = approx_tokens * 4
+    target_chars = int(approx_tokens * _CHARS_PER_TOKEN)
     parts = [f"Note {rng.randrange(10 ** 9)}. Summarize these notes."]
     size = len(parts[0])
     while size < target_chars:
@@ -1404,6 +1416,16 @@ if __name__ == "__main__":
 
 Run: `uv run pytest -v` from `bench/`
 Expected: PASS, 35 passed (11 in `test_cost.py`, 10 in `test_prices.py`, 8 in `test_metrics.py`, 6 in `test_load.py`).
+
+Then confirm against the live server that `--prompt-tokens 1000` now sends close to 1000
+tokens, since that is the claim the writeup makes:
+
+```
+uv run python -m bench.load --base-url http://hpz440:8080 --model /models/Qwen2.5-7B-Instruct-Q4_K_M.gguf --slots 2 --ctx-per-slot 2048 --requests-per-client 3 --prompt-tokens 1000 --max-tokens 60
+```
+
+Expected: `prompt_tokens_mean` within about 5% of 1000, `prefill_valid: true`, and
+`cached_tokens_total` a low single-digit percentage of `prompt_tokens_total`.
 
 If `test_one_request_measures_ttft_and_usage` fails on `ttft_ms`, the stub's chunked framing is at fault, not `load.py` — check that each SSE event is written as its own HTTP chunk and flushed.
 
@@ -1894,13 +1916,14 @@ def break_even_rows(
 
 def _throughput_table(sweep: dict) -> str:
     lines = [
-        "| Slots | Ctx/slot | Aggregate tok/s | Per-client tok/s | Prefill tok/s | TTFT p50 | TTFT p95 | GPU W mean | VRAM MB |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Slots | Ctx/slot | Prompt tok | Aggregate tok/s | Per-client tok/s | Prefill tok/s | TTFT p50 | TTFT p95 | GPU W mean | VRAM MB |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for p in throughput_rows(sweep):
         prefill = f"{p['prefill_tps']:.0f}" if p.get("prefill_valid") else "n/a (cached)"
         lines.append(
-            f"| {p['slots']} | {p['ctx_per_slot']} | {p['aggregate_output_tps']:.1f} | "
+            f"| {p['slots']} | {p['ctx_per_slot']} | {p.get('prompt_tokens_mean', 0):.0f} | "
+            f"{p['aggregate_output_tps']:.1f} | "
             f"{p['per_client_output_tps']:.1f} | {prefill} | {p['ttft_ms_p50']:.0f} ms | "
             f"{p['ttft_ms_p95']:.0f} ms | {p.get('gpu_watts_mean')} | {p.get('vram_mb_max')} |"
         )
