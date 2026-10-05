@@ -59,6 +59,16 @@ def test_summarize_flags_cache_contamination():
     assert out["cached_tokens_total"] == 2000
 
 
+def test_summarize_tolerates_the_measured_cache_floor():
+    """The chat template and llama.cpp block granularity cache ~13% at worst.
+
+    Measured live on 2026-10-05 at 1000-token prompts. A threshold below this would
+    mark every honest run invalid, which is the bug this test pins down.
+    """
+    floor = [_sample(cached_tokens=130) for _ in range(4)]  # 520 of 4000 = 13%
+    assert summarize(floor, wall_seconds=10.0, slots=2, ctx_per_slot=2048)["prefill_valid"] is True
+
+
 def test_summarize_percentile_fields_present():
     samples = [_sample(ttft_ms=float(i), latency_ms=float(i * 10)) for i in (1, 2, 3, 4)]
     out = summarize(samples, wall_seconds=10.0, slots=1, ctx_per_slot=2048)
