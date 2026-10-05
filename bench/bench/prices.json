@@ -1,0 +1,46 @@
+{
+  "hosted": [
+    {
+      "provider": "Together AI",
+      "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+      "usd_per_mtok_in": 0.18,
+      "usd_per_mtok_out": 0.18,
+      "source_url": "https://www.together.ai/models/llama-3-1",
+      "retrieved": "2026-10-04"
+    },
+    {
+      "provider": "DeepInfra",
+      "model": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+      "usd_per_mtok_in": 0.02,
+      "usd_per_mtok_out": 0.04,
+      "source_url": "https://deepinfra.com/pricing",
+      "retrieved": "2026-10-04"
+    }
+  ],
+  "hardware": [
+    {
+      "name": "RTX 3060 12GB (this box)",
+      "usd": 300.0,
+      "decode_tps_7b_q4": 61.9,
+      "source_url": "benchmarks/benchmark-20260930-131153.json",
+      "retrieved": "2026-09-30",
+      "measured_here": true
+    },
+    {
+      "name": "NVIDIA RTX 4090 24GB",
+      "usd": 3998.90,
+      "decode_tps_7b_q4": 90.3,
+      "source_url": "https://markaicode.com/benchmarks/llamacpp-llama-31-rtx-4090-throughput-benchmark/",
+      "retrieved": "2026-10-04",
+      "measured_here": false
+    },
+    {
+      "name": "NVIDIA DGX Spark (128GB)",
+      "usd": 6950.0,
+      "decode_tps_7b_q4": null,
+      "source_url": "https://www.servethehome.com/nvidia-dgx-spark-64gb-launched-and-big-128gb-gb10-price-increases/",
+      "retrieved": "2026-10-04",
+      "measured_here": false
+    }
+  ]
+}
