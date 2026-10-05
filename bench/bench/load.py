@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import random
 import sys
 import time
 
@@ -31,20 +32,37 @@ import httpx
 
 from bench.metrics import RequestSample, summarize
 
-# Deterministic filler with a distinct opening per seed. Real English keeps the
-# tokenizer honest; a repeated single character would not tokenize realistically.
-_FILLER = (
-    "The HPZ440 serves a quantized instruct model over a local network for a single "
-    "household operator who cares about latency, privacy, and the electricity bill. "
-)
+# Ordinary words, so the tokenizer behaves as it would on real text; a repeated
+# single character would not. The body is drawn from the seed rather than being a
+# fixed string, which matters more than it looks: see build_prompt.
+_WORDS = (
+    "server model token latency cache prompt decode prefill throughput slot context "
+    "window kernel memory bandwidth quantize weight tensor batch stream request reply "
+    "inbox message draft classify archive journal policy gate agent briefing household "
+    "electricity meter amortize capex median listing provider hosted rented owned"
+).split()
 
 
 def build_prompt(seed: int, approx_tokens: int) -> str:
-    """A prompt of roughly approx_tokens tokens, unique from its first characters."""
-    head = f"Request variant {seed} ({seed * 7919}). Summarize the following notes. "
+    """A prompt of ~approx_tokens tokens sharing no long run of text with any other seed.
+
+    Every word comes from the seed, not just an opening line. A varying head on a
+    fixed body is NOT enough, and the difference is not subtle: measured against this
+    server on 2026-10-05, prompts built that way were served 99.9% from llama.cpp's
+    cache across two clients and reported a prefill rate of 55,934 tok/s against a
+    real 2,340 -- a 24x fiction. Seed-derived bodies measured 4.2% cached.
+
+    Deterministic in the seed, so a rerun of the same sweep point is comparable.
+    """
+    rng = random.Random(seed)
     target_chars = approx_tokens * 4
-    body = _FILLER * (target_chars // len(_FILLER) + 1)
-    return (head + body)[:target_chars]
+    parts = [f"Note {rng.randrange(10 ** 9)}. Summarize these notes."]
+    size = len(parts[0])
+    while size < target_chars:
+        word = rng.choice(_WORDS)
+        parts.append(word)
+        size += len(word) + 1
+    return " ".join(parts)[:target_chars]
 
 
 async def one_request(

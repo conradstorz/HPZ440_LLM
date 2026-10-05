@@ -70,12 +70,34 @@ def stub_server():
     server.server_close()
 
 
+def _shares_long_run(a: str, b: str, run: int = 200) -> bool:
+    """Does any 200-character window of a appear anywhere in b?"""
+    return any(a[i : i + run] in b for i in range(0, len(a) - run, run))
+
+
 def test_build_prompt_is_distinct_per_seed():
     a = load.build_prompt(0, 1000)
     b = load.build_prompt(1, 1000)
     assert a != b
-    # The first 50 characters must already differ, or the slots share a cache prefix.
     assert a[:50] != b[:50]
+
+
+def test_build_prompt_shares_no_long_run_between_seeds():
+    """The property that makes the prefill measurement real.
+
+    A differing opening is not enough. Two prompts sharing a long body let
+    llama.cpp serve almost the whole prefill from cache -- measured at 99.9%,
+    inflating the reported prefill rate 24x.
+    """
+    a = load.build_prompt(0, 1000)
+    b = load.build_prompt(1, 1000)
+    assert not _shares_long_run(a, b)
+    assert not _shares_long_run(b, a)
+
+
+def test_build_prompt_is_deterministic():
+    """The same sweep point must be rerunnable and comparable."""
+    assert load.build_prompt(7, 1000) == load.build_prompt(7, 1000)
 
 
 def test_build_prompt_is_roughly_the_requested_length():
