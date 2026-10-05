@@ -29,14 +29,21 @@
 | --- | --- |
 | `compose.yaml` | Add `--parallel ${LLM_PARALLEL:-1}` to `llm-api`. Nothing else changes. |
 | `.env.example` | Add `LLM_PARALLEL=1` with the context-division warning. |
-| `bench/pyproject.toml` | uv project: `httpx`, dev `pytest`. Separate from `jarvis/` — it is a tool, not part of the app. |
-| `bench/metrics.py` | Pure arithmetic over a list of request samples → one summary dict. No I/O. |
-| `bench/cost.py` | Pure arithmetic: monthly cost of ownership, hosted cost per mixed Mtok, break-even volume. No I/O. |
-| `bench/prices.py` | Load and validate `prices.json`. Rejects any entry missing `source_url` or `retrieved`. |
-| `bench/prices.json` | The fetched price data. |
-| `bench/load.py` | Async httpx client: N concurrent streaming clients, 5 sequential requests each, emits summary JSON on stdout. |
-| `bench/report.py` | Reads a sweep JSON + prices, prints the Markdown tables for the two docs. |
+| `bench/pyproject.toml` | uv project root. Deps `httpx`, dev `pytest`. Separate from `jarvis/` — it is a tool, not part of the app. |
+| `bench/bench/metrics.py` | Pure arithmetic over a list of request samples → one summary dict. No I/O. |
+| `bench/bench/cost.py` | Pure arithmetic: monthly cost of ownership, hosted cost per mixed Mtok, break-even volume. No I/O. |
+| `bench/bench/prices.py` | Load and validate `prices.json`. Rejects any entry missing `source_url` or `retrieved`. |
+| `bench/bench/prices.json` | The fetched price data. |
+| `bench/bench/load.py` | Async httpx client: N concurrent streaming clients, 5 sequential requests each, emits summary JSON on stdout. |
+| `bench/bench/report.py` | Reads a sweep JSON + prices, prints the Markdown tables for the two docs. |
 | `bench/tests/` | pytest for `metrics`, `cost`, `prices`, and `load` against a stub SSE server. |
+
+**Layout rule, and it is the one thing most likely to go wrong:** the uv project root is
+`bench/` and the importable package is `bench/bench/`, exactly mirroring `jarvis/jarvis/`.
+Every pytest command runs with `bench/` as the working directory, and the sweep script invokes
+`uv --directory bench run python -m bench.load`. Do not put modules directly in `bench/` —
+`from bench import cost` and `python -m bench.load` both need `bench/` on `sys.path` with the
+package one level below it.
 | `scripts/stress-test.ps1` | Sweep loop, `.env` rewrite and restore, container restart, GPU telemetry, result merge. |
 | `docs/cost-model.md` | The written comparison, its assumptions, and its honesty caveats. |
 | `docs/models.md` | Measured table gains the sweep rows. |
@@ -153,13 +160,14 @@ Pure functions, hand-checked fixtures, no network and no GPU. This is the part t
 
 **Files:**
 - Create: `bench/pyproject.toml`
-- Create: `bench/cost.py`
+- Create: `bench/bench/__init__.py`
+- Create: `bench/bench/cost.py`
 - Create: `bench/tests/test_cost.py`
 - Modify: `.gitignore`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces, all in `bench/cost.py`:
+- Produces, all in `bench/bench/cost.py`:
   - `MIX_INPUT_TOKENS: int = 1000`, `MIX_OUTPUT_TOKENS: int = 300`
   - `HOURS_PER_MONTH: int = 720`, `AMORTIZATION_MONTHS: int = 36`
   - `CAPEX_USD: float = 300.0`, `PRICE_PER_KWH: float = 0.17`
@@ -192,11 +200,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
+packages = ["bench"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = [".."]
+pythonpath = ["."]
 filterwarnings = ["error"]
 ```
 
@@ -291,7 +299,7 @@ Expected: collection error — `ModuleNotFoundError: No module named 'bench.cost
 
 - [ ] **Step 4: Write the implementation**
 
-Create `bench/cost.py`:
+Create `bench/bench/cost.py`:
 
 ```python
 """Cost of ownership and break-even arithmetic for the HPZ440 LLM stack.
@@ -399,15 +407,15 @@ def break_even_mixed_mtok(
     return monthly_cost_usd / hosted_per_mixed_mtok
 ```
 
-Create an empty `bench/__init__.py` and an empty `bench/tests/__init__.py` so `from bench import cost` resolves with `pythonpath = [".."]`:
+Create an empty `bench/bench/__init__.py` so `from bench import cost` resolves with
+`pythonpath = ["."]` and `python -m bench.load` resolves from `bench/`:
 
 ```bash
-printf '' > bench/__init__.py
+printf '' > bench/bench/__init__.py
 ```
 
-```bash
-printf '' > bench/tests/__init__.py
-```
+There is deliberately no `bench/tests/__init__.py` — pytest's `pythonpath = ["."]` puts
+`bench/` on `sys.path`, which is what makes `bench` importable. This mirrors `jarvis/`.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
@@ -417,12 +425,12 @@ Expected: PASS, 11 passed.
 - [ ] **Step 6: Confirm the venv is ignored and lockfile is tracked**
 
 Run: `git status --short bench/`
-Expected: `bench/pyproject.toml`, `bench/uv.lock`, `bench/__init__.py`, `bench/cost.py`, `bench/tests/` listed as untracked. **`bench/.venv/` must NOT appear** — `.gitignore` already has `.venv/`. If it does appear, add `bench/.venv/` to `.gitignore` in this task.
+Expected: `bench/pyproject.toml`, `bench/uv.lock`, `bench/bench/__init__.py`, `bench/bench/cost.py`, `bench/tests/` listed as untracked. **`bench/.venv/` must NOT appear** — `.gitignore` already has `.venv/`. If it does appear, add `bench/.venv/` to `.gitignore` in this task.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add bench/pyproject.toml bench/uv.lock bench/__init__.py bench/cost.py bench/tests/
+git add bench/pyproject.toml bench/uv.lock bench/bench/__init__.py bench/bench/cost.py bench/tests/
 git commit -m "feat(bench): break-even cost model with hand-checked fixtures"
 ```
 
@@ -433,13 +441,13 @@ git commit -m "feat(bench): break-even cost model with hand-checked fixtures"
 The loader refuses prices that lack a source and a date. That is the mechanism that keeps recalled numbers out of the comparison.
 
 **Files:**
-- Create: `bench/prices.py`
-- Create: `bench/prices.json`
+- Create: `bench/bench/prices.py`
+- Create: `bench/bench/prices.json`
 - Create: `bench/tests/test_prices.py`
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces, in `bench/prices.py`:
+- Produces, in `bench/bench/prices.py`:
   - `@dataclass(frozen=True) HostedPrice` with fields `provider: str`, `model: str`, `usd_per_mtok_in: float`, `usd_per_mtok_out: float`, `source_url: str`, `retrieved: str`
   - `@dataclass(frozen=True) HardwarePrice` with fields `name: str`, `usd: float`, `decode_tps_7b_q4: float | None`, `source_url: str`, `retrieved: str`, `measured_here: bool`
   - `load_prices(path: Path | str) -> tuple[list[HostedPrice], list[HardwarePrice]]` — raises `ValueError` naming the offending entry if any record is missing `source_url` or `retrieved`, or if `retrieved` is not `YYYY-MM-DD`.
@@ -518,7 +526,7 @@ def test_rejects_malformed_retrieved_date(tmp_path):
 
 def test_shipped_prices_file_is_valid():
     """The committed prices.json must itself satisfy the provenance rule."""
-    path = Path(__file__).resolve().parent.parent / "prices.json"
+    path = Path(prices.__file__).resolve().parent / "prices.json"
     hosted, hardware = prices.load_prices(path)
     assert hosted, "no hosted prices recorded"
     assert hardware, "no hardware prices recorded"
@@ -531,7 +539,7 @@ Expected: collection error — `ModuleNotFoundError: No module named 'bench.pric
 
 - [ ] **Step 3: Write the loader**
 
-Create `bench/prices.py`:
+Create `bench/bench/prices.py`:
 
 ```python
 """Price data with mandatory provenance.
@@ -637,7 +645,7 @@ Rules:
 - If a hardware decode figure cannot be sourced, set `decode_tps_7b_q4` to `null` rather than estimating.
 - Frontier APIs (Claude, GPT, Gemini) are **excluded by design decision**. Do not add them.
 
-Then create `bench/prices.json` with this exact shape, substituting the fetched values:
+Then create `bench/bench/prices.json` with this exact shape, substituting the fetched values:
 
 ```json
 {
@@ -682,7 +690,7 @@ Expected: PASS, 5 passed. `test_shipped_prices_file_is_valid` passing proves eve
 - [ ] **Step 6: Commit**
 
 ```bash
-git add bench/prices.py bench/prices.json bench/tests/test_prices.py
+git add bench/bench/prices.py bench/bench/prices.json bench/tests/test_prices.py
 git commit -m "feat(bench): price data with enforced source URL and retrieval date"
 ```
 
@@ -693,18 +701,18 @@ git commit -m "feat(bench): price data with enforced source URL and retrieval da
 Two separable pieces: `metrics.py` is pure arithmetic tested in isolation, `load.py` is the async client tested against a local stub SSE server. Neither needs the GPU.
 
 **Files:**
-- Create: `bench/metrics.py`
-- Create: `bench/load.py`
+- Create: `bench/bench/metrics.py`
+- Create: `bench/bench/load.py`
 - Create: `bench/tests/test_metrics.py`
 - Create: `bench/tests/test_load.py`
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces, in `bench/metrics.py`:
+- Produces, in `bench/bench/metrics.py`:
   - `@dataclass(frozen=True) RequestSample` with fields `ttft_ms: float`, `latency_ms: float`, `output_tokens: int`, `prompt_tokens: int`, `prompt_ms: float`, `cached_tokens: int`
   - `percentile(values: list[float], p: float) -> float` — linear interpolation, raises `ValueError` on an empty list
   - `summarize(samples: list[RequestSample], wall_seconds: float, slots: int, ctx_per_slot: int) -> dict`
-- Produces, in `bench/load.py`:
+- Produces, in `bench/bench/load.py`:
   - `async def one_request(client: httpx.AsyncClient, base_url: str, model: str, prompt: str, max_tokens: int) -> RequestSample`
   - `async def run_slot_point(base_url: str, model: str, slots: int, ctx_per_slot: int, requests_per_client: int, prompt_tokens: int, max_tokens: int) -> dict`
   - `def main(argv: list[str] | None = None) -> int` — CLI that prints the `summarize` dict as JSON on stdout
@@ -792,7 +800,7 @@ Expected: collection error — `ModuleNotFoundError: No module named 'bench.metr
 
 - [ ] **Step 3: Write metrics.py**
 
-Create `bench/metrics.py`:
+Create `bench/bench/metrics.py`:
 
 ```python
 """Throughput and latency arithmetic over a set of completed requests.
@@ -1012,9 +1020,54 @@ def test_run_slot_point_summarizes_all_clients(stub_server):
 Run: `uv run pytest tests/test_load.py -v` from `bench/`
 Expected: collection error — `ModuleNotFoundError: No module named 'bench.load'`
 
-- [ ] **Step 7: Write load.py**
+- [ ] **Step 7: Verify llama.cpp actually honours `ignore_eos` — BLOCKING**
 
-Create `bench/load.py`:
+`ignore_eos` is natively a llama.cpp `/completion` parameter, not an OpenAI field. The
+OpenAI-compat layer at `/v1/chat/completions` forwards some extra fields and silently drops
+others. If it drops this one, every request stops at EOS, output token counts vary, and the
+sweep re-creates the exact defect the plan exists to avoid — with no error to notice.
+
+Confirm the stack is up (`pwsh -NoProfile -File scripts/health.ps1`), then run:
+
+```bash
+curl -s http://hpz440:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"local","messages":[{"role":"user","content":"Say hi."}],"max_tokens":300,"ignore_eos":true,"temperature":0}' > /tmp/eos.json
+```
+
+```bash
+python -c "import json; d=json.load(open('/tmp/eos.json')); print(d['usage']['completion_tokens'], d['choices'][0]['finish_reason'])"
+```
+
+Expected if honoured: `300 length`. "Say hi." would naturally stop in a handful of tokens, so
+300 proves EOS was ignored.
+
+If it prints a small number and `stop`, the field was dropped. Then change `one_request` in
+Step 8 to post to **`/completion`** instead — llama.cpp's native endpoint, which honours it —
+using this payload shape:
+
+```python
+    # llama.cpp native endpoint. Streamed chunks are `data: {"content": "...", "stop": false}`;
+    # the final chunk carries "timings", "tokens_predicted" and "tokens_evaluated" rather than
+    # an OpenAI "usage" object.
+    payload = {
+        "prompt": prompt,
+        "n_predict": max_tokens,
+        "ignore_eos": True,
+        "stream": True,
+        "temperature": 0.0,
+        "cache_prompt": False,
+    }
+```
+
+and read `tokens_predicted`, `tokens_evaluated`, and `timings.prompt_ms` from the final chunk.
+`cache_prompt: False` exists only on this endpoint and removes the prefix-cache concern
+outright — keep the distinct prompts anyway, and keep the `prefill_valid` check.
+
+Record which endpoint you used in a comment at the top of `load.py`, and carry it into
+`docs/cost-model.md` in Task 6.
+
+- [ ] **Step 8: Write load.py**
+
+Create `bench/bench/load.py`:
 
 ```python
 """Concurrent load generator for the llama.cpp OpenAI-compatible server.
@@ -1199,17 +1252,21 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 8: Run the whole suite to verify it passes**
+- [ ] **Step 9: Run the whole suite to verify it passes**
 
 Run: `uv run pytest -v` from `bench/`
 Expected: PASS, 27 passed (11 in `test_cost.py`, 5 in `test_prices.py`, 7 in `test_metrics.py`, 4 in `test_load.py`).
 
 If `test_one_request_measures_ttft_and_usage` fails on `ttft_ms`, the stub's chunked framing is at fault, not `load.py` — check that each SSE event is written as its own HTTP chunk and flushed.
 
-- [ ] **Step 9: Commit**
+If Step 7 forced the `/completion` endpoint, update `_StubHandler` and
+`test_one_request_measures_ttft_and_usage` to the native chunk shape in the same step. The test
+must match the endpoint the implementation actually calls.
+
+- [ ] **Step 10: Commit**
 
 ```bash
-git add bench/metrics.py bench/load.py bench/tests/test_metrics.py bench/tests/test_load.py
+git add bench/bench/metrics.py bench/bench/load.py bench/tests/test_metrics.py bench/tests/test_load.py
 git commit -m "feat(bench): concurrent streaming load generator and metrics"
 ```
 
@@ -1225,7 +1282,7 @@ The PowerShell wrapper owns everything that touches the server: `.env` rewriting
 - Modify: `tests/assert-project-shape.ps1`
 
 **Interfaces:**
-- Consumes: `bench/load.py`'s CLI — `uv run python -m bench.load --base-url --model --slots --ctx-per-slot --requests-per-client --prompt-tokens --max-tokens`, printing one JSON object on stdout.
+- Consumes: `bench/bench/load.py`'s CLI — `uv run python -m bench.load --base-url --model --slots --ctx-per-slot --requests-per-client --prompt-tokens --max-tokens`, printing one JSON object on stdout.
 - Produces: `benchmarks/stress-<stamp>.json`, an object `{ "started", "model", "ctx_per_slot", "price_per_kwh", "capex_usd", "points": [ <summarize dict merged with gpu_watts_* and vram_mb_max> ] }`.
 
 - [ ] **Step 1: Write the failing contract assertions**
@@ -1308,17 +1365,24 @@ function Set-EnvKey {
     Set-Content -Path $EnvPath -Value $Lines
 }
 
+# The sampler runs unbounded and is killed explicitly, so it always outlives the load. A
+# guessed timeout would expire mid-load at high slot counts and report watts from a partial
+# window.
+$SamplerName = 'hpz440-bench-smi'
+
 function Start-GpuSampler {
-    param([int]$Seconds)
+    docker --context $Context rm -f $SamplerName 2>$null | Out-Null
     Start-Job -ScriptBlock {
-        param($Ctx, $Image, $Query, $Secs)
-        docker --context $Ctx run --rm --gpus all $Image `
-            timeout $Secs nvidia-smi --query-gpu=$Query --format=csv,noheader,nounits -l 1
-    } -ArgumentList $Context, $CudaImage, $SmiQuery, $Seconds
+        param($Ctx, $Image, $Query, $Name)
+        docker --context $Ctx run --rm --name $Name --gpus all $Image `
+            nvidia-smi --query-gpu=$Query --format=csv,noheader,nounits -l 1
+    } -ArgumentList $Context, $CudaImage, $SmiQuery, $SamplerName
 }
 
-function Get-SamplerStats {
+function Stop-GpuSampler {
     param($Job)
+    # Killing the container ends the piped process, which completes the job.
+    docker --context $Context kill $SamplerName 2>$null | Out-Null
     $Lines = Receive-Job -Job $Job -Wait -AutoRemoveJob 2>$null
     $Watts = @(); $Vram = @()
     foreach ($Line in $Lines) {
@@ -1355,9 +1419,13 @@ New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 $OutputPath = Join-Path $OutputDir "stress-$Stamp.json"
 $Points = @()
 
-# Idle baseline, taken once before any slot count, with no load on the GPU.
-Write-Host "Sampling idle GPU power for $IdleSampleSeconds s..."
-$IdleStats = Get-SamplerStats (Start-GpuSampler -Seconds $IdleSampleSeconds)
+# Baseline draw with the model resident in VRAM and no requests in flight. This is NOT a
+# cold-idle GPU -- llama.cpp holds the weights, and that is the state the box actually sits in
+# 24/7, which is the right number for the cost model. docs/cost-model.md labels it so.
+Write-Host "Sampling baseline GPU power (model resident, no load) for $IdleSampleSeconds s..."
+$IdleSampler = Start-GpuSampler
+Start-Sleep -Seconds $IdleSampleSeconds
+$IdleStats = Stop-GpuSampler $IdleSampler
 if ($null -eq $IdleStats) {
     Write-Warning 'GPU telemetry unavailable. Throughput will still be measured; docs/cost-model.md cannot be regenerated without watts.'
 }
@@ -1382,15 +1450,13 @@ try {
             break
         }
 
-        # Sample for the expected duration of the load, generously over-estimated;
-        # the sampler exits on its own timeout if the load finishes first.
-        $Sampler = Start-GpuSampler -Seconds (60 * $RequestsPerClient)
+        $Sampler = Start-GpuSampler
         $Json = & uv --directory (Join-Path $Root 'bench') run python -m bench.load `
             --base-url $BaseUrl --model $Model --slots $N --ctx-per-slot $CtxPerSlot `
             --requests-per-client $RequestsPerClient --prompt-tokens $PromptTokens `
             --max-tokens $MaxTokens
         $LoadExit = $LASTEXITCODE
-        $LoadStats = Get-SamplerStats $Sampler
+        $LoadStats = Stop-GpuSampler $Sampler
 
         if ($LoadExit -ne 0) {
             Write-Warning "Load generator failed at $N slots (exit $LoadExit). Recording error and continuing."
@@ -1417,6 +1483,7 @@ finally {
     Write-Host ""
     Write-Host 'Restoring .env and restarting llm-api at production settings...'
     [System.IO.File]::WriteAllBytes($EnvPath, $OriginalEnv)
+    docker --context $Context rm -f $SamplerName 2>$null | Out-Null
     docker --context $Context compose --env-file .env up -d llm-api
     if ($LASTEXITCODE -ne 0) { Write-Warning 'llm-api did not restart cleanly. Run scripts/start.ps1.' }
 }
@@ -1502,7 +1569,7 @@ git commit -m "feat: concurrency sweep script with .env restore and GPU power sa
 This is the task that produces the answer. It needs the GPU and a healthy stack.
 
 **Files:**
-- Create: `bench/report.py`
+- Create: `bench/bench/report.py`
 - Create: `bench/tests/test_report.py`
 - Create: `docs/cost-model.md`
 - Modify: `docs/models.md`
@@ -1511,7 +1578,7 @@ This is the task that produces the answer. It needs the GPU and a healthy stack.
 
 **Interfaces:**
 - Consumes: `bench.cost` (all functions listed in Task 2), `bench.prices.load_prices`, and a sweep JSON of the shape Task 5 produces.
-- Produces, in `bench/report.py`:
+- Produces, in `bench/bench/report.py`:
   - `def throughput_rows(sweep: dict) -> list[dict]` — one row per `ok` point
   - `def break_even_rows(sweep: dict, hosted: list[HostedPrice], hours_active_options: list[float]) -> list[dict]`
   - `def main(argv: list[str] | None = None) -> int` — `--sweep <path>` prints both Markdown tables on stdout
@@ -1599,7 +1666,7 @@ Expected: collection error — `ModuleNotFoundError: No module named 'bench.repo
 
 - [ ] **Step 3: Write report.py**
 
-Create `bench/report.py`:
+Create `bench/bench/report.py`:
 
 ```python
 """Turn a sweep JSON plus the price file into the Markdown tables for the docs."""
@@ -1734,7 +1801,7 @@ Expected: PASS, zero failures.
 - [ ] **Step 5: Commit the report module before the hardware run**
 
 ```bash
-git add bench/report.py bench/tests/test_report.py
+git add bench/bench/report.py bench/tests/test_report.py
 git commit -m "feat(bench): Markdown report tables for throughput and break-even"
 ```
 
@@ -1811,12 +1878,17 @@ plus electricity.
 | Electricity | $0.17/kWh | Conrad's rate, 2026-10 |
 | Powered hours | 720/month | The HPZ440 stays on |
 | Token mix | 1000 in / 300 out per request | Jarvis triage shape: a message body in, a short classification out |
-| Idle GPU draw | <N> W | Measured, `nvidia-smi`, no load |
+| Baseline GPU draw, model resident | <N> W | Measured, `nvidia-smi`, weights loaded, no requests in flight. The state the box sits in 24/7, not a cold-idle card |
 | Load GPU draw | <N> W | Measured, peak sweep mean |
+| Endpoint | `/v1/chat/completions` or `/completion` | Whichever honoured `ignore_eos`; see Task 4 Step 7 |
 
 ## Throughput
 
 <the throughput table from Step 7>
+
+Percentiles are over `slots x 4` measured requests (5 per client, the first discarded as
+warm-up). At 1 slot that is 4 samples, so read the 1-slot p95 as the slowest of four requests,
+not as a tail latency.
 
 <One paragraph: did throughput scale with slots, and where did it stop scaling? If the 8-slot
 point OOMed or regressed, say so and give the number.>
@@ -1833,6 +1905,8 @@ how much.>
 - **GPU-only watts.** `nvidia-smi` reports the card, not the HP Z440 around it. Whole-box
   draw is materially higher, so the owning cost above is a **lower bound** and the real
   break-even volume is **higher** than the table says. A wall meter would close this.
+- **The baseline is not a cold-idle GPU.** It is measured with the model resident in VRAM,
+  because that is how the box runs. A card with no model loaded would draw less.
 - **Quality is not matched to frontier models.** Every hosted row is a Llama-3.1-8B or
   Qwen-7B-class instruct model — the same tier as what runs here. Frontier APIs are excluded
   on purpose: quoting their $/Mtok beside a 7B's throughput would be a comparison of two
