@@ -73,4 +73,11 @@ Assert-FileContains 'scripts/jarvis-agent-token.ps1' 'HOST_JARVIS_DATA_DIR'
 Assert-FileContains 'scripts/jarvis-agent-token.ps1' '/data/secrets/agent_token'
 Assert-FileContains 'scripts/jarvis-agent-token.ps1' 'sh -e -c'
 
+Assert-FileContains 'scripts/stress-test.ps1' 'LLM_PARALLEL'
+Assert-FileContains 'scripts/stress-test.ps1' 'hpz440:8080'
+Assert-FileContains 'scripts/stress-test.ps1' 'finally'
+Assert-FileContains 'scripts/stress-test.ps1' 'bench\.load'
+Assert-FileContains 'scripts/stress-test.ps1' 'ignore the prefill'
+Assert-FileNotContains 'scripts/stress-test.ps1' 'localhost:8080'
+
 Write-Host 'Script contract checks passed.'
