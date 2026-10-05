@@ -222,6 +222,9 @@ def test_run_slot_point_window_excludes_a_straggler_tail(monkeypatch):
     )
 
     assert out["requests"] == 4
-    assert out["wall_seconds"] == pytest.approx(0.20, abs=0.06)
-    # ~0.29 would mean the straggler's solo tail is back inside the window.
-    assert out["wall_seconds"] < 0.26
+    assert out["wall_seconds"] == pytest.approx(0.20, abs=0.07)
+    # Measured: the round barrier yields 0.226 s here, while the pre-fix structure
+    # (each client running its own rounds, window = first start to last finish)
+    # yields 0.305 s. The bound sits between them with room for event-loop
+    # overhead on either side.
+    assert out["wall_seconds"] < 0.27
