@@ -74,6 +74,9 @@ def summarize(
         "wall_seconds": wall_seconds,
         "output_tokens_total": output_total,
         "prompt_tokens_total": prompt_total,
+        # What was actually sent, not what was requested. The writeup quotes this,
+        # because a requested prompt size is an estimate until the tokenizer sees it.
+        "prompt_tokens_mean": prompt_total / len(samples),
         "aggregate_output_tps": aggregate_tps,
         "per_client_output_tps": aggregate_tps / slots,
         "prefill_tps": prefill_tps,

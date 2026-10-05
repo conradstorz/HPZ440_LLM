@@ -42,6 +42,12 @@ _WORDS = (
     "electricity meter amortize capex median listing provider hosted rented owned"
 ).split()
 
+# Measured on this model's tokenizer via the server's /tokenize endpoint on
+# 2026-10-05: 6.21 chars/token at 250 requested tokens, settling to 6.56-6.58 from
+# 1000 upward. The naive 4.0 used before made --prompt-tokens 1000 send only 610
+# tokens, a 39% undershoot that would have mislabelled every row of the writeup.
+_CHARS_PER_TOKEN = 6.55
+
 
 def build_prompt(seed: int, approx_tokens: int) -> str:
     """A prompt of ~approx_tokens tokens sharing no long run of text with any other seed.
@@ -55,7 +61,7 @@ def build_prompt(seed: int, approx_tokens: int) -> str:
     Deterministic in the seed, so a rerun of the same sweep point is comparable.
     """
     rng = random.Random(seed)
-    target_chars = approx_tokens * 4
+    target_chars = int(approx_tokens * _CHARS_PER_TOKEN)
     parts = [f"Note {rng.randrange(10 ** 9)}. Summarize these notes."]
     size = len(parts[0])
     while size < target_chars:

@@ -37,6 +37,7 @@ def test_summarize_aggregate_throughput():
     out = summarize(samples, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
     assert out["aggregate_output_tps"] == pytest.approx(120.0)
     assert out["per_client_output_tps"] == pytest.approx(60.0)
+    assert out["prompt_tokens_mean"] == pytest.approx(1000.0)
     assert out["requests"] == 4
     assert out["slots"] == 2
     assert out["ctx_per_slot"] == 2048

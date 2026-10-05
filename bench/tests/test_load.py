@@ -102,8 +102,10 @@ def test_build_prompt_is_deterministic():
 
 def test_build_prompt_is_roughly_the_requested_length():
     prompt = load.build_prompt(0, 1000)
-    # ~4 characters per token is the usual rule of thumb; allow a wide band.
-    assert 2000 < len(prompt) < 6000
+    # Sized by the measured 6.55 chars/token, so 1000 tokens is ~6550 characters.
+    # The live check that this lands near 1000 real tokens is the server's tokenizer,
+    # not this test; this only pins that the calibration is being applied at all.
+    assert 6200 < len(prompt) < 6900
 
 
 def test_one_request_measures_ttft_and_usage(stub_server):
