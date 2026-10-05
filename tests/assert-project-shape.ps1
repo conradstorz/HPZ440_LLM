@@ -81,6 +81,11 @@ Assert-FileContains '.env.example' '^LLM_PARALLEL=1$'
 Assert-FileContains 'README.md' 'scripts/stress-test\.ps1'
 Assert-FileContains 'docs/operations.md' 'scripts/stress-test\.ps1'
 
+Assert-FileContains 'docs/cost-model.md' '^# Cost Model'
+Assert-FileContains 'docs/cost-model.md' 'lower bound'
+Assert-FileContains 'docs/cost-model.md' 'Break-even'
+Assert-FileContains 'docs/models.md' 'Concurrency'
+
 $Gitkeep = Join-Path $Root 'models/.gitkeep'
 if (-not (Test-Path $Gitkeep)) { throw 'Missing models/.gitkeep placeholder' }
 

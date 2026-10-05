@@ -1,6 +1,6 @@
 # Stress Test and Tokens-per-Dollar Cost Model Design
 
-Status: Proposed
+Status: Implemented
 Updated: 2026-10-04
 Roadmap phase: cross-cutting (capacity and economics). Does not change a permission stage.
 
