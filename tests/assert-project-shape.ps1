@@ -78,6 +78,9 @@ Assert-FileContains 'compose.yaml' 'ENABLE_FORWARD_USER_INFO_HEADERS=true'
 Assert-FileContains 'compose.yaml' '\$\{LLM_PARALLEL:-1\}'
 Assert-FileContains '.env.example' '^LLM_PARALLEL=1$'
 
+Assert-FileContains 'README.md' 'scripts/stress-test\.ps1'
+Assert-FileContains 'docs/operations.md' 'scripts/stress-test\.ps1'
+
 $Gitkeep = Join-Path $Root 'models/.gitkeep'
 if (-not (Test-Path $Gitkeep)) { throw 'Missing models/.gitkeep placeholder' }
 

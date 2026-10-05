@@ -31,6 +31,10 @@ pwsh -NoProfile -File scripts/jarvis-run.ps1
 pwsh -NoProfile -File scripts/jarvis-reindex.ps1
 ```
 
+```powershell
+pwsh -NoProfile -File scripts/stress-test.ps1   # concurrency sweep; rewrites and restores .env, Jarvis is down while it runs
+```
+
 ## Default URLs
 
 - API: `http://localhost:8080/v1`

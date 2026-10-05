@@ -60,6 +60,16 @@ Run `pwsh -NoProfile -File scripts/benchmark.ps1` after the API is healthy.
 
 Benchmark JSON is written under `benchmarks/`, which is ignored by git. It includes `generated_tokens_per_second` and `prompt_tokens_per_second` from llama.cpp's `timings` block; record the generated figure in the Measured table in `docs/models.md`.
 
+### Concurrency sweep
+
+`pwsh -NoProfile -File scripts/stress-test.ps1` measures aggregate throughput at 1, 2, 4, and
+8 llama.cpp slots, holding 2048 tokens of context per slot. It rewrites `LLM_PARALLEL` and
+`LLM_CONTEXT_SIZE` in `.env`, restarts `llm-api` once per slot count, and restores `.env`
+byte-for-byte in a `finally` block. Jarvis shares `LLM_CONTEXT_SIZE`, so Jarvis is
+unavailable for the few minutes the sweep runs. Unlike the other scripts it talks to
+`http://hpz440:8080` directly rather than `localhost`, because an SSH tunnel would become the
+bottleneck at eight concurrent streams.
+
 ## Exposure
 
 Public internet exposure is out of scope. Keep this service on the LAN unless a later hardening project adds authentication, TLS, and network controls.
