@@ -14,8 +14,9 @@ Three details decide whether the numbers mean anything:
 
 * ignore_eos with a fixed max_tokens, so every request emits an identical token
   count. Without it you measure the model's verbosity.
-* A distinct prompt per client, so llama.cpp's prefix cache cannot serve one
-  slot's prefill from another's.
+* A prompt per client that shares no long run of text with any other, so llama.cpp's
+  cache cannot serve one slot's prefill from another's. A varying head on a shared
+  body fails this: measured 99.9% cached and a 24x inflated prefill rate.
 * Streaming, so time to first token is observable at all.
 """
 
@@ -159,31 +160,45 @@ async def run_slot_point(
         raise ValueError("requests_per_client must be at least 2 (one is warm-up)")
 
     collected: list[RequestSample] = []
-    spans: list[tuple[float, float]] = []
+    round_spans: list[tuple[float, float]] = []
 
-    async def client_loop(index: int, client: httpx.AsyncClient) -> None:
-        for round_index in range(requests_per_client):
-            prompt = build_prompt(index * 1000 + round_index, prompt_tokens)
-            started = time.perf_counter()
-            sample = await one_request(client, base_url, model, prompt, max_tokens)
-            finished = time.perf_counter()
-            if round_index > 0:  # discard warm-up
-                collected.append(sample)
-                spans.append((started, finished))
+    async def one(
+        index: int, round_index: int, client: httpx.AsyncClient
+    ) -> tuple[RequestSample, float, float]:
+        prompt = build_prompt(index * 1000 + round_index, prompt_tokens)
+        started = time.perf_counter()
+        sample = await one_request(client, base_url, model, prompt, max_tokens)
+        return sample, started, time.perf_counter()
 
     # Separate clients so each concurrent stream gets its own connection.
     clients = [httpx.AsyncClient(timeout=httpx.Timeout(600.0)) for _ in range(slots)]
     try:
-        await asyncio.gather(*(client_loop(i, clients[i]) for i in range(slots)))
+        # One round at a time, all slots together. Letting each client run its own
+        # rounds independently leaves the slowest client finishing alone while the
+        # others idle, and that solo tail lands inside the measured window and
+        # understates aggregate throughput -- worst when there are few rounds.
+        # Gathering per round keeps every measured window genuinely concurrent.
+        for round_index in range(requests_per_client):
+            results = await asyncio.gather(
+                *(one(i, round_index, clients[i]) for i in range(slots))
+            )
+            if round_index == 0:
+                continue  # warm-up round, measured by nobody
+            collected.extend(sample for sample, _, _ in results)
+            round_spans.append(
+                (
+                    min(started for _, started, _ in results),
+                    max(finished for _, _, finished in results),
+                )
+            )
     finally:
         await asyncio.gather(*(c.aclose() for c in clients), return_exceptions=True)
 
-    if not spans:
+    if not round_spans:
         raise RuntimeError("no measured requests completed")
-    # Wall time of the measured window: earliest measured start to latest
-    # measured end. Warm-up requests are excluded from both ends, so the window
-    # covers only the period when every slot was already loaded.
-    measured_wall_s = max(end for _, end in spans) - min(start for start, _ in spans)
+    # Sum the per-round concurrent windows, so the gaps between rounds are not
+    # counted as time the server spent generating.
+    measured_wall_s = sum(end - start for start, end in round_spans)
     return summarize(collected, measured_wall_s, slots, ctx_per_slot)
 
 

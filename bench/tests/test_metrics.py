@@ -44,10 +44,12 @@ def test_summarize_aggregate_throughput():
 
 
 def test_summarize_prefill_rate():
-    # 1000 prompt tokens in 1000 ms = 1000 tok/s, per request; 4 requests is the same rate.
+    # Nothing cached: 1000 prompt tokens computed in 1000 ms = 1000 tok/s per
+    # request, and 4 requests at that rate is still 1000 tok/s.
     samples = [_sample() for _ in range(4)]
     out = summarize(samples, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
     assert out["prefill_tps"] == pytest.approx(1000.0)
+    assert out["prefill_tokens_computed"] == 4000
 
 
 def test_summarize_flags_cache_contamination():
@@ -58,6 +60,28 @@ def test_summarize_flags_cache_contamination():
     out = summarize(dirty, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
     assert out["prefill_valid"] is False
     assert out["cached_tokens_total"] == 2000
+
+
+def test_summarize_prefill_rate_counts_only_computed_tokens():
+    """Cached tokens were not computed, so they must not inflate the rate.
+
+    timings.prompt_ms covers only the computation. Including cached tokens in the
+    numerator overstates prefill by 1/(1 - cached_share).
+    """
+    # 4 requests x 1000 prompt tokens, a quarter of them served from cache, each
+    # reporting 1000 ms of prefill compute: 3000 computed tokens over 4.0 s.
+    samples = [_sample(cached_tokens=250) for _ in range(4)]
+    out = summarize(samples, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
+    assert out["prefill_tokens_computed"] == 3000
+    assert out["prefill_tps"] == pytest.approx(750.0)
+
+
+def test_summarize_rejects_a_run_with_no_prompt_accounting():
+    """Absent prompt counts are not a clean run; they are no measurement at all."""
+    samples = [_sample(prompt_tokens=0, cached_tokens=0, prompt_ms=0.0) for _ in range(4)]
+    out = summarize(samples, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
+    assert out["prefill_valid"] is False
+    assert out["prefill_tps"] is None
 
 
 def test_summarize_tolerates_the_measured_cache_floor():

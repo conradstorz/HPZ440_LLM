@@ -71,8 +71,14 @@ def stub_server():
 
 
 def _shares_long_run(a: str, b: str, run: int = 200) -> bool:
-    """Does any 200-character window of a appear anywhere in b?"""
-    return any(a[i : i + run] in b for i in range(0, len(a) - run, run))
+    """Does any `run`-character window of a appear anywhere in b?
+
+    Every offset, not every `run`-th offset: a window-aligned scan misses a shared
+    run straddling its boundaries. Short inputs compare whole.
+    """
+    if len(a) <= run or len(b) <= run:
+        return a in b or b in a
+    return any(a[i : i + run] in b for i in range(len(a) - run + 1))
 
 
 def test_build_prompt_is_distinct_per_seed():
@@ -155,3 +161,10 @@ def test_run_slot_point_summarizes_all_clients(stub_server):
     assert out["slots"] == 2
     assert out["output_tokens_total"] == 4 * CHUNKS
     assert out["prefill_valid"] is True
+
+    # The window must be the two concurrent rounds, not the four requests end to
+    # end. Four serial requests would take about 4 x CHUNKS x CHUNK_DELAY_S; two
+    # concurrent rounds take about half that, so anything near the serial figure
+    # means the clients were measured as if they had not overlapped.
+    serial_s = 4 * CHUNKS * CHUNK_DELAY_S
+    assert 0.0 < out["wall_seconds"] < serial_s * 0.8

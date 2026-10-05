@@ -64,8 +64,23 @@ def summarize(
     cached_total = sum(s.cached_tokens for s in samples)
 
     aggregate_tps = output_total / wall_seconds
-    prefill_tps = (prompt_total / (prompt_ms_total / 1000.0)) if prompt_ms_total > 0 else None
-    contaminated = prompt_total > 0 and (cached_total / prompt_total) > CACHE_CONTAMINATION_LIMIT
+
+    # Only the uncached tokens were actually computed, and timings.prompt_ms covers
+    # only that computation. Dividing ALL prompt tokens by it inflates the rate by
+    # 1/(1 - cached_share): a silent 1.33x even at the 25% share this still calls
+    # valid, and 24x at the 99.9% share a shared-prefix bug once produced.
+    computed_prompt_tokens = prompt_total - cached_total
+    prefill_tps = (
+        computed_prompt_tokens / (prompt_ms_total / 1000.0)
+        if prompt_ms_total > 0 and computed_prompt_tokens > 0
+        else None
+    )
+
+    # No prompt accounting means there is no prefill measurement to trust, so an
+    # absent count is invalid rather than vacuously clean.
+    contaminated = (
+        prompt_total <= 0 or (cached_total / prompt_total) > CACHE_CONTAMINATION_LIMIT
+    )
 
     return {
         "slots": slots,
@@ -80,6 +95,7 @@ def summarize(
         "aggregate_output_tps": aggregate_tps,
         "per_client_output_tps": aggregate_tps / slots,
         "prefill_tps": prefill_tps,
+        "prefill_tokens_computed": computed_prompt_tokens,
         "cached_tokens_total": cached_total,
         "prefill_valid": not contaminated,
         "ttft_ms_p50": percentile([s.ttft_ms for s in samples], 50),
