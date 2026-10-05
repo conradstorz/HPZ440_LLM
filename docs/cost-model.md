@@ -2,7 +2,10 @@
 
 Measured 2026-10-05 on the RTX 3060 12GB with Qwen2.5-7B-Instruct Q4_K_M.
 Source data: `benchmarks/stress-20261005-091820.json`. Regenerate with
-`uv --directory bench run python -m bench.report --sweep <file>`.
+`uv --directory bench run python -m bench.report --sweep <file>` — pass an **absolute** path
+to `<file>`: `--directory bench` moves the process's working directory into `bench/`, so a
+path like `benchmarks/stress-<stamp>.json` typed relative to the repo root resolves to
+`bench/benchmarks/...` and fails with `FileNotFoundError`.
 
 ## The question
 
@@ -78,12 +81,18 @@ with the slot count chosen in production.
 The headline, stated plainly: at Jarvis's actual load — roughly a couple of hundred emails a
 month, call it 200 requests — the box does not win on price, by a wide margin. 200 requests at
 the 1000/300 mix is 0.26 mixed Mtok/month, against a break-even of 60.0 Mmix/month for
-Together AI at the realistic 30 active-hours-a-month row: the box would need to run roughly
-**230x** its actual Jarvis volume before owning it beats renting from Together. Against
-DeepInfra's $0.02/$0.04 pricing the gap is worse: break-even is 438.5 Mmix/month, roughly
-**1,690x** actual load. Owning this GPU is not the cheaper way to run triage at this
-household's volume under either hosted comparison. The reasons the box exists anyway are not
-dollar reasons — see "What this does not say" below.
+Together AI at the 30 active-hours-a-month row — the **lowest** activity level modelled, and
+therefore the one most favorable to owning the box (idle watts dominate the cost at low
+activity, and 30 h/month is as low as this table goes). Even against that most-favorable row,
+the box would need to run roughly **230x** its actual Jarvis volume before owning it beats
+renting from Together. Jarvis's real duty cycle is in fact well below even 30 active
+hours/month — 200 requests at the 8-slot median latency of 16.4 s is under an hour of active
+GPU time — so 230x is a floor on the gap, not a point estimate: the true multiple, modelled at
+Jarvis's real (lower) activity level, would be larger still. Against DeepInfra's $0.02/$0.04
+pricing the gap is worse: break-even is 438.5 Mmix/month, roughly **1,690x** actual load.
+Owning this GPU is not the cheaper way to run triage at this household's volume under either
+hosted comparison. The reasons the box exists anyway are not dollar reasons — see "What this
+does not say" below.
 
 ## What this does not say
 
