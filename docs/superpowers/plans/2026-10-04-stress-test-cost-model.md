@@ -1,0 +1,1925 @@
+# Stress Test and Tokens-per-Dollar Cost Model Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Measure the HPZ440's real concurrent throughput and power draw, then report the monthly token volume at which owning the RTX 3060 beats renting a hosted model of the same class.
+
+**Architecture:** A new `bench/` Python package (uv, httpx) holds two pure-function modules — `metrics.py` (percentiles and throughput arithmetic) and `cost.py` (break-even model) — plus `load.py`, an async client that drives N concurrent streaming completions against `http://hpz440:8080` and prints one JSON object per slot count. `scripts/stress-test.ps1` owns the sweep loop and server lifecycle: it rewrites `.env`, restarts `llm-api`, samples `nvidia-smi` in a throwaway container, invokes the Python load for that slot count, and restores `.env` in a `finally` block. Results land in `benchmarks/stress-<stamp>.json`; the written comparison goes in `docs/cost-model.md`.
+
+**Tech Stack:** Python 3.12 + httpx + pytest under `uv`; PowerShell 7 for orchestration; Docker CLI context `hpz440`; llama.cpp `server-cuda`.
+
+## Global Constraints
+
+- Spec: `docs/superpowers/specs/2026-10-04-stress-test-cost-model-design.md`. Read it before Task 1.
+- **Never chain shell commands with `&&`.** The permission system blocks chained commands. Use separate tool calls. (User's global CLAUDE.md.)
+- Python runs only through `uv`: `uv sync`, `uv run python`, `uv run pytest`. Never `pip install`, never `python -m venv`, never `activate`.
+- Load generator targets **`http://hpz440:8080`** (the llama.cpp inference service), never `localhost` and never port 8090 (the Jarvis agent, which silently drops `tools` and is not the model).
+- Docker always via `docker --context hpz440`. Never start local containers, never switch to `default` or `desktop-linux`.
+- Capex is **$300** (RTX 3060, purchased 2026-09-29). Electricity is **$0.17/kWh**. Amortization is **36 months**. Powered hours per month is **720**.
+- Token mix is **1000 input / 300 output** per request. A "mixed Mtok" is 1,000,000 tokens at that ratio.
+- Every price written into `bench/prices.json` carries a literal `source_url` and a `retrieved` ISO date obtained by fetching at write time. **No price from memory.**
+- Local-hardware comparison rows are published third-party benchmarks, labelled as such with sources. They are not measured here.
+- `tests/assert-project-shape.ps1` and `tests/assert-script-contracts.ps1` regex-match literal file content. Any new script, new `.env.example` key, new `compose.yaml` line, or new doc heading needs its assertion added **in the same task**.
+- `benchmarks/` is already in `.gitignore`. Raw sweep JSON is never committed; only the derived tables in `docs/models.md` and `docs/cost-model.md` are.
+- Commit after every task. Branch is `bench/stress-test-cost-model`, already created.
+
+## File Structure
+
+| File | Responsibility |
+| --- | --- |
+| `compose.yaml` | Add `--parallel ${LLM_PARALLEL:-1}` to `llm-api`. Nothing else changes. |
+| `.env.example` | Add `LLM_PARALLEL=1` with the context-division warning. |
+| `bench/pyproject.toml` | uv project: `httpx`, dev `pytest`. Separate from `jarvis/` — it is a tool, not part of the app. |
+| `bench/metrics.py` | Pure arithmetic over a list of request samples → one summary dict. No I/O. |
+| `bench/cost.py` | Pure arithmetic: monthly cost of ownership, hosted cost per mixed Mtok, break-even volume. No I/O. |
+| `bench/prices.py` | Load and validate `prices.json`. Rejects any entry missing `source_url` or `retrieved`. |
+| `bench/prices.json` | The fetched price data. |
+| `bench/load.py` | Async httpx client: N concurrent streaming clients, 5 sequential requests each, emits summary JSON on stdout. |
+| `bench/report.py` | Reads a sweep JSON + prices, prints the Markdown tables for the two docs. |
+| `bench/tests/` | pytest for `metrics`, `cost`, `prices`, and `load` against a stub SSE server. |
+| `scripts/stress-test.ps1` | Sweep loop, `.env` rewrite and restore, container restart, GPU telemetry, result merge. |
+| `docs/cost-model.md` | The written comparison, its assumptions, and its honesty caveats. |
+| `docs/models.md` | Measured table gains the sweep rows. |
+
+Task order is dependency order: Task 1 unblocks the server, Tasks 2–4 are pure Python with no hardware, Task 5 is the orchestration, Task 6 is the real run and the writeup.
+
+---
+
+### Task 1: `--parallel` plumbing
+
+Without this the server has one slot and the whole sweep is meaningless. Default stays `1`, so an ordinary `start.ps1` behaves exactly as today.
+
+**Files:**
+- Modify: `compose.yaml` (the `llm-api` `command:` list)
+- Modify: `.env.example`
+- Modify: `tests/assert-project-shape.ps1`
+
+- [ ] **Step 1: Add the failing assertions first**
+
+Append to `tests/assert-project-shape.ps1`, immediately **before** the `$Gitkeep` block near the end of the file:
+
+```powershell
+Assert-FileContains 'compose.yaml' '\$\{LLM_PARALLEL:-1\}'
+Assert-FileContains '.env.example' '^LLM_PARALLEL=1$'
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `pwsh -NoProfile -File tests/assert-project-shape.ps1`
+
+Expected: FAIL with `Expected compose.yaml to contain pattern: \$\{LLM_PARALLEL:-1\}`
+
+- [ ] **Step 3: Add the flag to compose.yaml**
+
+In `compose.yaml`, inside `services.llm-api.command`, after the `--ctx-size` pair and before `--n-gpu-layers`, insert:
+
+```yaml
+      - --parallel
+      - "${LLM_PARALLEL:-1}"
+```
+
+The resulting `command` block reads:
+
+```yaml
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --model
+      - "${LLM_MODEL_PATH:-/models/model.gguf}"
+      - --ctx-size
+      - "${LLM_CONTEXT_SIZE:-4096}"
+      - --parallel
+      - "${LLM_PARALLEL:-1}"
+      - --n-gpu-layers
+      - "${LLM_GPU_LAYERS:-999}"
+```
+
+- [ ] **Step 4: Add the key to .env.example**
+
+In `.env.example`, replace the line `LLM_GPU_LAYERS=999` with:
+
+```
+LLM_GPU_LAYERS=999
+# Concurrent llama.cpp slots. LLM_CONTEXT_SIZE is the TOTAL KV budget and is divided
+# across slots: LLM_PARALLEL=4 with LLM_CONTEXT_SIZE=8192 gives each slot 2048 tokens.
+# Raise only for a benchmark sweep; scripts/stress-test.ps1 sets and restores it.
+LLM_PARALLEL=1
+```
+
+- [ ] **Step 5: Run both test scripts to verify they pass**
+
+Run: `pwsh -NoProfile -File tests/assert-project-shape.ps1`
+Expected: PASS, ending `Project guardrail checks passed.`
+
+Run: `pwsh -NoProfile -File tests/assert-script-contracts.ps1`
+Expected: PASS (unchanged by this task, run to confirm no regression).
+
+- [ ] **Step 6: Add the key to the operator's own .env**
+
+`.env` is untracked, so it does not get the new key automatically. Run:
+
+```bash
+grep -c '^LLM_PARALLEL=' .env
+```
+
+If the count is `0`, append it:
+
+```bash
+printf 'LLM_PARALLEL=1\n' >> .env
+```
+
+Expected: `grep '^LLM_PARALLEL=' .env` now prints `LLM_PARALLEL=1`.
+
+- [ ] **Step 7: Verify the stack still comes up unchanged**
+
+Run: `pwsh -NoProfile -File scripts/start.ps1`
+Then: `pwsh -NoProfile -File scripts/health.ps1`
+Expected: `/v1/models` answers, WebUI root answers, jarvis `/health` answers. A `--parallel 1` server is behaviourally identical to no flag.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add compose.yaml .env.example tests/assert-project-shape.ps1
+git commit -m "feat: make llama.cpp slot count configurable via LLM_PARALLEL"
+```
+
+---
+
+### Task 2: Cost model arithmetic
+
+Pure functions, hand-checked fixtures, no network and no GPU. This is the part that has to be right — the break-even number is the deliverable.
+
+**Files:**
+- Create: `bench/pyproject.toml`
+- Create: `bench/cost.py`
+- Create: `bench/tests/test_cost.py`
+- Modify: `.gitignore`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces, all in `bench/cost.py`:
+  - `MIX_INPUT_TOKENS: int = 1000`, `MIX_OUTPUT_TOKENS: int = 300`
+  - `HOURS_PER_MONTH: int = 720`, `AMORTIZATION_MONTHS: int = 36`
+  - `CAPEX_USD: float = 300.0`, `PRICE_PER_KWH: float = 0.17`
+  - `mix_fractions(input_tokens: int = MIX_INPUT_TOKENS, output_tokens: int = MIX_OUTPUT_TOKENS) -> tuple[float, float]`
+  - `requests_per_mixed_mtok(input_tokens: int = ..., output_tokens: int = ...) -> float`
+  - `monthly_power_cost(watts_idle: float, watts_load: float, hours_active: float, price_per_kwh: float = PRICE_PER_KWH, hours_per_month: int = HOURS_PER_MONTH) -> float`
+  - `monthly_cost_of_ownership(capex_usd: float = CAPEX_USD, *, watts_idle: float, watts_load: float, hours_active: float, price_per_kwh: float = PRICE_PER_KWH, amortization_months: int = AMORTIZATION_MONTHS) -> float`
+  - `hosted_cost_per_mixed_mtok(price_in_per_mtok: float, price_out_per_mtok: float, input_tokens: int = ..., output_tokens: int = ...) -> float`
+  - `break_even_mixed_mtok(monthly_cost_usd: float, hosted_per_mixed_mtok: float) -> float`
+
+- [ ] **Step 1: Create the uv project**
+
+Create `bench/pyproject.toml`:
+
+```toml
+[project]
+name = "bench"
+version = "0.1.0"
+description = "Throughput sweep and cost model for the HPZ440 LLM stack"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".."]
+filterwarnings = ["error"]
+```
+
+Then run, as separate calls:
+
+```bash
+cd bench
+```
+
+```bash
+uv sync
+```
+
+Expected: a `bench/.venv` is created and `httpx` plus `pytest` resolve. `.venv/` is already gitignored.
+
+- [ ] **Step 2: Write the failing test**
+
+Create `bench/tests/test_cost.py`:
+
+```python
+import pytest
+
+from bench import cost
+
+
+def test_mix_fractions_sum_to_one():
+    frac_in, frac_out = cost.mix_fractions()
+    assert frac_in == pytest.approx(1000 / 1300)
+    assert frac_out == pytest.approx(300 / 1300)
+    assert frac_in + frac_out == pytest.approx(1.0)
+
+
+def test_requests_per_mixed_mtok():
+    # 1,000,000 tokens at 1300 tokens per request.
+    assert cost.requests_per_mixed_mtok() == pytest.approx(769.2307, abs=1e-4)
+
+
+def test_monthly_power_cost_worked_example():
+    # 12 W idle for 660 h = 7.920 kWh; 170 W under load for 60 h = 10.200 kWh.
+    # 18.120 kWh at $0.17 = $3.0804.
+    assert cost.monthly_power_cost(12.0, 170.0, 60.0) == pytest.approx(3.0804, abs=1e-4)
+
+
+def test_monthly_power_cost_idle_only():
+    # hours_active = 0: 12 W for the full 720 h = 8.64 kWh at $0.17 = $1.4688.
+    assert cost.monthly_power_cost(12.0, 170.0, 0.0) == pytest.approx(1.4688, abs=1e-4)
+
+
+def test_monthly_power_cost_fully_loaded():
+    # hours_active = 720: no idle hours remain. 170 W x 720 h = 122.4 kWh = $20.808.
+    assert cost.monthly_power_cost(12.0, 170.0, 720.0) == pytest.approx(20.808, abs=1e-3)
+
+
+def test_monthly_power_cost_rejects_impossible_hours():
+    with pytest.raises(ValueError):
+        cost.monthly_power_cost(12.0, 170.0, 721.0)
+    with pytest.raises(ValueError):
+        cost.monthly_power_cost(12.0, 170.0, -1.0)
+
+
+def test_monthly_cost_of_ownership_worked_example():
+    # $300 / 36 months = $8.3333 capex, plus $3.0804 power.
+    result = cost.monthly_cost_of_ownership(
+        watts_idle=12.0, watts_load=170.0, hours_active=60.0
+    )
+    assert result == pytest.approx(11.4137, abs=1e-4)
+
+
+def test_hosted_cost_symmetric_prices():
+    # Equal input and output prices: the mix cannot change the per-Mtok figure.
+    assert cost.hosted_cost_per_mixed_mtok(0.20, 0.20) == pytest.approx(0.20)
+
+
+def test_hosted_cost_asymmetric_prices():
+    # 0.10 * (1000/1300) + 0.40 * (300/1300)
+    assert cost.hosted_cost_per_mixed_mtok(0.10, 0.40) == pytest.approx(0.1692307, abs=1e-6)
+
+
+def test_break_even_worked_example():
+    assert cost.break_even_mixed_mtok(11.4137, 0.20) == pytest.approx(57.0685, abs=1e-3)
+
+
+def test_break_even_rejects_free_hosting():
+    with pytest.raises(ValueError):
+        cost.break_even_mixed_mtok(11.41, 0.0)
+```
+
+- [ ] **Step 3: Run the test to verify it fails**
+
+Run: `uv run pytest tests/test_cost.py -v` from `bench/`
+Expected: collection error — `ModuleNotFoundError: No module named 'bench.cost'`
+
+- [ ] **Step 4: Write the implementation**
+
+Create `bench/cost.py`:
+
+```python
+"""Cost of ownership and break-even arithmetic for the HPZ440 LLM stack.
+
+Pure functions over numbers. No I/O, no network, no hardware.
+
+"Tokens per dollar" is unbounded for hardware you already own, so the headline
+figure here is a break-even monthly token volume: the volume at which paying a
+hosted provider costs the same as amortized capex plus electricity.
+"""
+
+MIX_INPUT_TOKENS = 1000
+MIX_OUTPUT_TOKENS = 300
+
+HOURS_PER_MONTH = 720
+AMORTIZATION_MONTHS = 36
+
+CAPEX_USD = 300.0  # RTX 3060 12GB, purchased 2026-09-29.
+PRICE_PER_KWH = 0.17  # Conrad's rate, 2026-10.
+
+
+def mix_fractions(
+    input_tokens: int = MIX_INPUT_TOKENS,
+    output_tokens: int = MIX_OUTPUT_TOKENS,
+) -> tuple[float, float]:
+    """Fraction of a mixed-token unit that is input, and that is output."""
+    total = input_tokens + output_tokens
+    if total <= 0:
+        raise ValueError("token mix must be positive")
+    return input_tokens / total, output_tokens / total
+
+
+def requests_per_mixed_mtok(
+    input_tokens: int = MIX_INPUT_TOKENS,
+    output_tokens: int = MIX_OUTPUT_TOKENS,
+) -> float:
+    """How many requests one million mixed tokens buys."""
+    total = input_tokens + output_tokens
+    if total <= 0:
+        raise ValueError("token mix must be positive")
+    return 1_000_000 / total
+
+
+def monthly_power_cost(
+    watts_idle: float,
+    watts_load: float,
+    hours_active: float,
+    price_per_kwh: float = PRICE_PER_KWH,
+    hours_per_month: int = HOURS_PER_MONTH,
+) -> float:
+    """Electricity for one month.
+
+    Idle watts are charged for every powered hour that is not active, because
+    the HPZ440 stays on. At low volume this term dominates.
+    """
+    if not 0.0 <= hours_active <= hours_per_month:
+        raise ValueError(
+            f"hours_active must be between 0 and {hours_per_month}, got {hours_active}"
+        )
+    idle_hours = hours_per_month - hours_active
+    kwh = (watts_idle * idle_hours + watts_load * hours_active) / 1000.0
+    return kwh * price_per_kwh
+
+
+def monthly_cost_of_ownership(
+    capex_usd: float = CAPEX_USD,
+    *,
+    watts_idle: float,
+    watts_load: float,
+    hours_active: float,
+    price_per_kwh: float = PRICE_PER_KWH,
+    amortization_months: int = AMORTIZATION_MONTHS,
+) -> float:
+    """Amortized hardware plus electricity, per month."""
+    if amortization_months <= 0:
+        raise ValueError("amortization_months must be positive")
+    capex_monthly = capex_usd / amortization_months
+    power = monthly_power_cost(watts_idle, watts_load, hours_active, price_per_kwh)
+    return capex_monthly + power
+
+
+def hosted_cost_per_mixed_mtok(
+    price_in_per_mtok: float,
+    price_out_per_mtok: float,
+    input_tokens: int = MIX_INPUT_TOKENS,
+    output_tokens: int = MIX_OUTPUT_TOKENS,
+) -> float:
+    """Dollars a hosted provider charges for one million mixed tokens.
+
+    Providers price input and output separately, and on this hardware prefill is
+    an order of magnitude faster than decode, so a single "tokens" unit is
+    meaningless without a fixed mix.
+    """
+    frac_in, frac_out = mix_fractions(input_tokens, output_tokens)
+    return price_in_per_mtok * frac_in + price_out_per_mtok * frac_out
+
+
+def break_even_mixed_mtok(
+    monthly_cost_usd: float,
+    hosted_per_mixed_mtok: float,
+) -> float:
+    """Mixed Mtok per month at which owning costs the same as renting."""
+    if hosted_per_mixed_mtok <= 0:
+        raise ValueError("hosted price must be positive")
+    return monthly_cost_usd / hosted_per_mixed_mtok
+```
+
+Create an empty `bench/__init__.py` and an empty `bench/tests/__init__.py` so `from bench import cost` resolves with `pythonpath = [".."]`:
+
+```bash
+printf '' > bench/__init__.py
+```
+
+```bash
+printf '' > bench/tests/__init__.py
+```
+
+- [ ] **Step 5: Run the test to verify it passes**
+
+Run: `uv run pytest tests/test_cost.py -v` from `bench/`
+Expected: PASS, 11 passed.
+
+- [ ] **Step 6: Confirm the venv is ignored and lockfile is tracked**
+
+Run: `git status --short bench/`
+Expected: `bench/pyproject.toml`, `bench/uv.lock`, `bench/__init__.py`, `bench/cost.py`, `bench/tests/` listed as untracked. **`bench/.venv/` must NOT appear** — `.gitignore` already has `.venv/`. If it does appear, add `bench/.venv/` to `.gitignore` in this task.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add bench/pyproject.toml bench/uv.lock bench/__init__.py bench/cost.py bench/tests/
+git commit -m "feat(bench): break-even cost model with hand-checked fixtures"
+```
+
+---
+
+### Task 3: Price data with mandatory provenance
+
+The loader refuses prices that lack a source and a date. That is the mechanism that keeps recalled numbers out of the comparison.
+
+**Files:**
+- Create: `bench/prices.py`
+- Create: `bench/prices.json`
+- Create: `bench/tests/test_prices.py`
+
+**Interfaces:**
+- Consumes: nothing from earlier tasks.
+- Produces, in `bench/prices.py`:
+  - `@dataclass(frozen=True) HostedPrice` with fields `provider: str`, `model: str`, `usd_per_mtok_in: float`, `usd_per_mtok_out: float`, `source_url: str`, `retrieved: str`
+  - `@dataclass(frozen=True) HardwarePrice` with fields `name: str`, `usd: float`, `decode_tps_7b_q4: float | None`, `source_url: str`, `retrieved: str`, `measured_here: bool`
+  - `load_prices(path: Path | str) -> tuple[list[HostedPrice], list[HardwarePrice]]` — raises `ValueError` naming the offending entry if any record is missing `source_url` or `retrieved`, or if `retrieved` is not `YYYY-MM-DD`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `bench/tests/test_prices.py`:
+
+```python
+import json
+from pathlib import Path
+
+import pytest
+
+from bench import prices
+
+
+GOOD = {
+    "hosted": [
+        {
+            "provider": "ExampleHost",
+            "model": "Llama-3.1-8B-Instruct",
+            "usd_per_mtok_in": 0.18,
+            "usd_per_mtok_out": 0.18,
+            "source_url": "https://example.invalid/pricing",
+            "retrieved": "2026-10-04",
+        }
+    ],
+    "hardware": [
+        {
+            "name": "RTX 3060 12GB",
+            "usd": 300.0,
+            "decode_tps_7b_q4": 61.9,
+            "source_url": "https://example.invalid/bench",
+            "retrieved": "2026-10-04",
+            "measured_here": True,
+        }
+    ],
+}
+
+
+def _write(tmp_path: Path, payload: dict) -> Path:
+    path = tmp_path / "prices.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_loads_well_formed_file(tmp_path):
+    hosted, hardware = prices.load_prices(_write(tmp_path, GOOD))
+    assert len(hosted) == 1
+    assert hosted[0].model == "Llama-3.1-8B-Instruct"
+    assert hosted[0].usd_per_mtok_out == 0.18
+    assert hardware[0].measured_here is True
+
+
+def test_rejects_hosted_entry_without_source(tmp_path):
+    payload = json.loads(json.dumps(GOOD))
+    del payload["hosted"][0]["source_url"]
+    with pytest.raises(ValueError, match="Llama-3.1-8B-Instruct"):
+        prices.load_prices(_write(tmp_path, payload))
+
+
+def test_rejects_hardware_entry_without_source(tmp_path):
+    payload = json.loads(json.dumps(GOOD))
+    payload["hardware"][0]["source_url"] = ""
+    with pytest.raises(ValueError, match="RTX 3060"):
+        prices.load_prices(_write(tmp_path, payload))
+
+
+def test_rejects_malformed_retrieved_date(tmp_path):
+    payload = json.loads(json.dumps(GOOD))
+    payload["hosted"][0]["retrieved"] = "Oct 2026"
+    with pytest.raises(ValueError, match="retrieved"):
+        prices.load_prices(_write(tmp_path, payload))
+
+
+def test_shipped_prices_file_is_valid():
+    """The committed prices.json must itself satisfy the provenance rule."""
+    path = Path(__file__).resolve().parent.parent / "prices.json"
+    hosted, hardware = prices.load_prices(path)
+    assert hosted, "no hosted prices recorded"
+    assert hardware, "no hardware prices recorded"
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `uv run pytest tests/test_prices.py -v` from `bench/`
+Expected: collection error — `ModuleNotFoundError: No module named 'bench.prices'`
+
+- [ ] **Step 3: Write the loader**
+
+Create `bench/prices.py`:
+
+```python
+"""Price data with mandatory provenance.
+
+Every number in the comparison must be traceable to a URL and a date it was
+fetched. This loader rejects a record that is missing either, so a price
+recalled from memory cannot reach the writeup.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+@dataclass(frozen=True)
+class HostedPrice:
+    provider: str
+    model: str
+    usd_per_mtok_in: float
+    usd_per_mtok_out: float
+    source_url: str
+    retrieved: str
+
+
+@dataclass(frozen=True)
+class HardwarePrice:
+    name: str
+    usd: float
+    decode_tps_7b_q4: float | None
+    source_url: str
+    retrieved: str
+    measured_here: bool
+
+
+def _check_provenance(record: dict, label: str) -> None:
+    if not record.get("source_url"):
+        raise ValueError(f"{label}: missing source_url. Fetch the price, do not recall it.")
+    retrieved = record.get("retrieved", "")
+    if not _DATE.match(str(retrieved)):
+        raise ValueError(f"{label}: retrieved must be YYYY-MM-DD, got {retrieved!r}")
+
+
+def load_prices(path: Path | str) -> tuple[list[HostedPrice], list[HardwarePrice]]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+
+    hosted: list[HostedPrice] = []
+    for record in payload.get("hosted", []):
+        label = f"{record.get('provider', '?')}/{record.get('model', '?')}"
+        _check_provenance(record, label)
+        hosted.append(
+            HostedPrice(
+                provider=record["provider"],
+                model=record["model"],
+                usd_per_mtok_in=float(record["usd_per_mtok_in"]),
+                usd_per_mtok_out=float(record["usd_per_mtok_out"]),
+                source_url=record["source_url"],
+                retrieved=record["retrieved"],
+            )
+        )
+
+    hardware: list[HardwarePrice] = []
+    for record in payload.get("hardware", []):
+        label = record.get("name", "?")
+        _check_provenance(record, label)
+        decode = record.get("decode_tps_7b_q4")
+        hardware.append(
+            HardwarePrice(
+                name=record["name"],
+                usd=float(record["usd"]),
+                decode_tps_7b_q4=None if decode is None else float(decode),
+                source_url=record["source_url"],
+                retrieved=record["retrieved"],
+                measured_here=bool(record.get("measured_here", False)),
+            )
+        )
+
+    return hosted, hardware
+```
+
+- [ ] **Step 4: Fetch the real prices**
+
+Use WebSearch and WebFetch to obtain, **for each** of the following, the current published per-million-token input and output price for a Llama-3.1-8B-Instruct or Qwen-2.5-7B-class instruct model:
+
+- Groq
+- Together AI
+- DeepInfra
+
+And for each of these, the current retail price plus a published Qwen2.5-7B (or Llama-3-8B) Q4 decode tok/s figure:
+
+- NVIDIA RTX 4090 (24GB)
+- Apple Mac mini M4 (16GB base)
+- NVIDIA DGX Spark
+
+Rules:
+- Record the exact URL you read the number from, not a search-results page.
+- Set `retrieved` to today's date in `YYYY-MM-DD`.
+- If a provider does not publish a price for a model in this class, omit that provider and note the omission in `docs/cost-model.md` in Task 6. Do not substitute a guess.
+- If a hardware decode figure cannot be sourced, set `decode_tps_7b_q4` to `null` rather than estimating.
+- Frontier APIs (Claude, GPT, Gemini) are **excluded by design decision**. Do not add them.
+
+Then create `bench/prices.json` with this exact shape, substituting the fetched values:
+
+```json
+{
+  "hosted": [
+    {
+      "provider": "<provider>",
+      "model": "<exact model id as the provider names it>",
+      "usd_per_mtok_in": 0.0,
+      "usd_per_mtok_out": 0.0,
+      "source_url": "<exact page you read>",
+      "retrieved": "<YYYY-MM-DD>"
+    }
+  ],
+  "hardware": [
+    {
+      "name": "RTX 3060 12GB (this box)",
+      "usd": 300.0,
+      "decode_tps_7b_q4": 61.9,
+      "source_url": "benchmarks/benchmark-20260930-131153.json",
+      "retrieved": "2026-09-30",
+      "measured_here": true
+    },
+    {
+      "name": "<other hardware>",
+      "usd": 0.0,
+      "decode_tps_7b_q4": null,
+      "source_url": "<exact page you read>",
+      "retrieved": "<YYYY-MM-DD>",
+      "measured_here": false
+    }
+  ]
+}
+```
+
+The RTX 3060 row above is the only entry whose `source_url` is a repo path rather than a URL — it is the one row measured on this hardware, and `measured_here` is `true` to mark that.
+
+- [ ] **Step 5: Run the test to verify it passes**
+
+Run: `uv run pytest tests/test_prices.py -v` from `bench/`
+Expected: PASS, 5 passed. `test_shipped_prices_file_is_valid` passing proves every committed price has a source and a date.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add bench/prices.py bench/prices.json bench/tests/test_prices.py
+git commit -m "feat(bench): price data with enforced source URL and retrieval date"
+```
+
+---
+
+### Task 4: Load generator and metrics
+
+Two separable pieces: `metrics.py` is pure arithmetic tested in isolation, `load.py` is the async client tested against a local stub SSE server. Neither needs the GPU.
+
+**Files:**
+- Create: `bench/metrics.py`
+- Create: `bench/load.py`
+- Create: `bench/tests/test_metrics.py`
+- Create: `bench/tests/test_load.py`
+
+**Interfaces:**
+- Consumes: nothing from earlier tasks.
+- Produces, in `bench/metrics.py`:
+  - `@dataclass(frozen=True) RequestSample` with fields `ttft_ms: float`, `latency_ms: float`, `output_tokens: int`, `prompt_tokens: int`, `prompt_ms: float`, `cached_tokens: int`
+  - `percentile(values: list[float], p: float) -> float` — linear interpolation, raises `ValueError` on an empty list
+  - `summarize(samples: list[RequestSample], wall_seconds: float, slots: int, ctx_per_slot: int) -> dict`
+- Produces, in `bench/load.py`:
+  - `async def one_request(client: httpx.AsyncClient, base_url: str, model: str, prompt: str, max_tokens: int) -> RequestSample`
+  - `async def run_slot_point(base_url: str, model: str, slots: int, ctx_per_slot: int, requests_per_client: int, prompt_tokens: int, max_tokens: int) -> dict`
+  - `def main(argv: list[str] | None = None) -> int` — CLI that prints the `summarize` dict as JSON on stdout
+  - `def build_prompt(seed: int, approx_tokens: int) -> str` — distinct per seed, so no two clients share a cache prefix
+
+- [ ] **Step 1: Write the failing metrics test**
+
+Create `bench/tests/test_metrics.py`:
+
+```python
+import pytest
+
+from bench.metrics import RequestSample, percentile, summarize
+
+
+def test_percentile_interpolates():
+    assert percentile([1.0, 2.0, 3.0, 4.0], 50) == pytest.approx(2.5)
+    assert percentile([1.0, 2.0, 3.0, 4.0], 0) == pytest.approx(1.0)
+    assert percentile([1.0, 2.0, 3.0, 4.0], 100) == pytest.approx(4.0)
+
+
+def test_percentile_single_value():
+    assert percentile([42.0], 95) == pytest.approx(42.0)
+
+
+def test_percentile_rejects_empty():
+    with pytest.raises(ValueError):
+        percentile([], 50)
+
+
+def _sample(**kw) -> RequestSample:
+    base = dict(
+        ttft_ms=100.0,
+        latency_ms=5000.0,
+        output_tokens=300,
+        prompt_tokens=1000,
+        prompt_ms=1000.0,
+        cached_tokens=0,
+    )
+    base.update(kw)
+    return RequestSample(**base)
+
+
+def test_summarize_aggregate_throughput():
+    # 4 requests x 300 tokens = 1200 tokens in 10 s wall time.
+    samples = [_sample() for _ in range(4)]
+    out = summarize(samples, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
+    assert out["aggregate_output_tps"] == pytest.approx(120.0)
+    assert out["per_client_output_tps"] == pytest.approx(60.0)
+    assert out["requests"] == 4
+    assert out["slots"] == 2
+    assert out["ctx_per_slot"] == 2048
+
+
+def test_summarize_prefill_rate():
+    # 1000 prompt tokens in 1000 ms = 1000 tok/s, per request; 4 requests is the same rate.
+    samples = [_sample() for _ in range(4)]
+    out = summarize(samples, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
+    assert out["prefill_tps"] == pytest.approx(1000.0)
+
+
+def test_summarize_flags_cache_contamination():
+    clean = [_sample(cached_tokens=5) for _ in range(4)]  # 20 of 4000 = 0.5%
+    assert summarize(clean, wall_seconds=10.0, slots=2, ctx_per_slot=2048)["prefill_valid"] is True
+
+    dirty = [_sample(cached_tokens=500) for _ in range(4)]  # 2000 of 4000 = 50%
+    out = summarize(dirty, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
+    assert out["prefill_valid"] is False
+    assert out["cached_tokens_total"] == 2000
+
+
+def test_summarize_percentile_fields_present():
+    samples = [_sample(ttft_ms=float(i), latency_ms=float(i * 10)) for i in (1, 2, 3, 4)]
+    out = summarize(samples, wall_seconds=10.0, slots=1, ctx_per_slot=2048)
+    assert out["ttft_ms_p50"] == pytest.approx(2.5)
+    assert out["latency_ms_p50"] == pytest.approx(25.0)
+    assert out["ttft_ms_p95"] == pytest.approx(3.85)
+    assert out["latency_ms_p95"] == pytest.approx(38.5)
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `uv run pytest tests/test_metrics.py -v` from `bench/`
+Expected: collection error — `ModuleNotFoundError: No module named 'bench.metrics'`
+
+- [ ] **Step 3: Write metrics.py**
+
+Create `bench/metrics.py`:
+
+```python
+"""Throughput and latency arithmetic over a set of completed requests.
+
+Pure functions. The load generator collects samples; this turns them into the
+numbers that go in the results file.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+# Above this share of prompt tokens served from llama.cpp's prefix cache, the
+# measured prefill rate is not a measurement of prefill.
+CACHE_CONTAMINATION_LIMIT = 0.01
+
+
+@dataclass(frozen=True)
+class RequestSample:
+    ttft_ms: float
+    latency_ms: float
+    output_tokens: int
+    prompt_tokens: int
+    prompt_ms: float
+    cached_tokens: int
+
+
+def percentile(values: list[float], p: float) -> float:
+    """Linear-interpolation percentile. p is 0-100."""
+    if not values:
+        raise ValueError("percentile of an empty sample")
+    if not 0.0 <= p <= 100.0:
+        raise ValueError(f"p must be 0-100, got {p}")
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * p / 100.0
+    low = int(position)
+    high = min(low + 1, len(ordered) - 1)
+    weight = position - low
+    return ordered[low] * (1 - weight) + ordered[high] * weight
+
+
+def summarize(
+    samples: list[RequestSample],
+    wall_seconds: float,
+    slots: int,
+    ctx_per_slot: int,
+) -> dict:
+    if not samples:
+        raise ValueError("no samples to summarize")
+    if wall_seconds <= 0:
+        raise ValueError("wall_seconds must be positive")
+
+    output_total = sum(s.output_tokens for s in samples)
+    prompt_total = sum(s.prompt_tokens for s in samples)
+    prompt_ms_total = sum(s.prompt_ms for s in samples)
+    cached_total = sum(s.cached_tokens for s in samples)
+
+    aggregate_tps = output_total / wall_seconds
+    prefill_tps = (prompt_total / (prompt_ms_total / 1000.0)) if prompt_ms_total > 0 else None
+    contaminated = prompt_total > 0 and (cached_total / prompt_total) > CACHE_CONTAMINATION_LIMIT
+
+    return {
+        "slots": slots,
+        "ctx_per_slot": ctx_per_slot,
+        "requests": len(samples),
+        "wall_seconds": wall_seconds,
+        "output_tokens_total": output_total,
+        "prompt_tokens_total": prompt_total,
+        "aggregate_output_tps": aggregate_tps,
+        "per_client_output_tps": aggregate_tps / slots,
+        "prefill_tps": prefill_tps,
+        "cached_tokens_total": cached_total,
+        "prefill_valid": not contaminated,
+        "ttft_ms_p50": percentile([s.ttft_ms for s in samples], 50),
+        "ttft_ms_p95": percentile([s.ttft_ms for s in samples], 95),
+        "latency_ms_p50": percentile([s.latency_ms for s in samples], 50),
+        "latency_ms_p95": percentile([s.latency_ms for s in samples], 95),
+    }
+```
+
+- [ ] **Step 4: Run it to verify it passes**
+
+Run: `uv run pytest tests/test_metrics.py -v` from `bench/`
+Expected: PASS, 7 passed.
+
+- [ ] **Step 5: Write the failing load test**
+
+Create `bench/tests/test_load.py`:
+
+```python
+import asyncio
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import httpx
+import pytest
+
+from bench import load
+
+
+CHUNK_DELAY_S = 0.02
+CHUNKS = 5
+
+
+class _StubHandler(BaseHTTPRequestHandler):
+    """Emits CHUNKS SSE deltas then a final chunk carrying usage and timings."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):  # silence the test output
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        assert body["stream"] is True
+        assert body["ignore_eos"] is True
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        def write(payload: dict) -> None:
+            data = f"data: {json.dumps(payload)}\n\n".encode()
+            self.wfile.write(f"{len(data):X}\r\n".encode() + data + b"\r\n")
+            self.wfile.flush()
+
+        import time
+
+        for i in range(CHUNKS):
+            time.sleep(CHUNK_DELAY_S)
+            write({"choices": [{"delta": {"content": f"t{i} "}}]})
+
+        write(
+            {
+                "choices": [{"delta": {}, "finish_reason": "length"}],
+                "usage": {
+                    "prompt_tokens": 1000,
+                    "completion_tokens": CHUNKS,
+                    "prompt_tokens_details": {"cached_tokens": 3},
+                },
+                "timings": {"prompt_n": 1000, "prompt_ms": 500.0, "predicted_n": CHUNKS},
+            }
+        )
+        data = b"data: [DONE]\n\n"
+        self.wfile.write(f"{len(data):X}\r\n".encode() + data + b"\r\n")
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+
+
+@pytest.fixture
+def stub_server():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+def test_build_prompt_is_distinct_per_seed():
+    a = load.build_prompt(0, 1000)
+    b = load.build_prompt(1, 1000)
+    assert a != b
+    # The first 50 characters must already differ, or the slots share a cache prefix.
+    assert a[:50] != b[:50]
+
+
+def test_build_prompt_is_roughly_the_requested_length():
+    prompt = load.build_prompt(0, 1000)
+    # ~4 characters per token is the usual rule of thumb; allow a wide band.
+    assert 2000 < len(prompt) < 6000
+
+
+def test_one_request_measures_ttft_and_usage(stub_server):
+    async def go():
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await load.one_request(
+                client, stub_server, "stub-model", "hello", max_tokens=CHUNKS
+            )
+
+    sample = asyncio.run(go())
+    assert sample.output_tokens == CHUNKS
+    assert sample.prompt_tokens == 1000
+    assert sample.prompt_ms == pytest.approx(500.0)
+    assert sample.cached_tokens == 3
+    # First delta arrives after one chunk delay; the whole stream takes CHUNKS of them.
+    assert sample.ttft_ms >= CHUNK_DELAY_S * 1000 * 0.5
+    assert sample.latency_ms > sample.ttft_ms
+
+
+def test_run_slot_point_summarizes_all_clients(stub_server):
+    out = asyncio.run(
+        load.run_slot_point(
+            base_url=stub_server,
+            model="stub-model",
+            slots=2,
+            ctx_per_slot=2048,
+            requests_per_client=3,
+            prompt_tokens=100,
+            max_tokens=CHUNKS,
+        )
+    )
+    # 3 requests per client, first discarded as warm-up: 2 clients x 2 = 4 samples.
+    assert out["requests"] == 4
+    assert out["slots"] == 2
+    assert out["output_tokens_total"] == 4 * CHUNKS
+    assert out["prefill_valid"] is True
+```
+
+- [ ] **Step 6: Run it to verify it fails**
+
+Run: `uv run pytest tests/test_load.py -v` from `bench/`
+Expected: collection error — `ModuleNotFoundError: No module named 'bench.load'`
+
+- [ ] **Step 7: Write load.py**
+
+Create `bench/load.py`:
+
+```python
+"""Concurrent load generator for the llama.cpp OpenAI-compatible server.
+
+One invocation measures one slot count. scripts/stress-test.ps1 owns the sweep,
+the container restarts, and the GPU telemetry; this process only generates load
+and prints a summary JSON object on stdout.
+
+Three details decide whether the numbers mean anything:
+
+* ignore_eos with a fixed max_tokens, so every request emits an identical token
+  count. Without it you measure the model's verbosity.
+* A distinct prompt per client, so llama.cpp's prefix cache cannot serve one
+  slot's prefill from another's.
+* Streaming, so time to first token is observable at all.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+import time
+
+import httpx
+
+from bench.metrics import RequestSample, summarize
+
+# Deterministic filler with a distinct opening per seed. Real English keeps the
+# tokenizer honest; a repeated single character would not tokenize realistically.
+_FILLER = (
+    "The HPZ440 serves a quantized instruct model over a local network for a single "
+    "household operator who cares about latency, privacy, and the electricity bill. "
+)
+
+
+def build_prompt(seed: int, approx_tokens: int) -> str:
+    """A prompt of roughly approx_tokens tokens, unique from its first characters."""
+    head = f"Request variant {seed} ({seed * 7919}). Summarize the following notes. "
+    target_chars = approx_tokens * 4
+    body = _FILLER * (target_chars // len(_FILLER) + 1)
+    return (head + body)[:target_chars]
+
+
+async def one_request(
+    client: httpx.AsyncClient,
+    base_url: str,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+) -> RequestSample:
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "ignore_eos": True,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "temperature": 0.0,
+    }
+
+    started = time.perf_counter()
+    ttft: float | None = None
+    usage: dict = {}
+    timings: dict = {}
+    deltas = 0
+
+    async with client.stream(
+        "POST", f"{base_url}/v1/chat/completions", json=payload
+    ) as response:
+        response.raise_for_status()
+        async for line in response.aiter_lines():
+            if not line.startswith("data: "):
+                continue
+            chunk = line[len("data: ") :].strip()
+            if chunk == "[DONE]":
+                break
+            event = json.loads(chunk)
+            choices = event.get("choices") or []
+            if choices and (choices[0].get("delta") or {}).get("content"):
+                deltas += 1
+                if ttft is None:
+                    ttft = (time.perf_counter() - started) * 1000.0
+            if event.get("usage"):
+                usage = event["usage"]
+            if event.get("timings"):
+                timings = event["timings"]
+
+    latency_ms = (time.perf_counter() - started) * 1000.0
+    if ttft is None:
+        raise RuntimeError("stream produced no content deltas")
+
+    output_tokens = int(usage.get("completion_tokens") or timings.get("predicted_n") or deltas)
+    prompt_tokens = int(usage.get("prompt_tokens") or timings.get("prompt_n") or 0)
+    cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+
+    return RequestSample(
+        ttft_ms=ttft,
+        latency_ms=latency_ms,
+        output_tokens=output_tokens,
+        prompt_tokens=prompt_tokens,
+        prompt_ms=float(timings.get("prompt_ms") or 0.0),
+        cached_tokens=cached,
+    )
+
+
+async def run_slot_point(
+    base_url: str,
+    model: str,
+    slots: int,
+    ctx_per_slot: int,
+    requests_per_client: int,
+    prompt_tokens: int,
+    max_tokens: int,
+) -> dict:
+    """Drive `slots` concurrent clients and summarize the measured requests.
+
+    Each client's first request is discarded as warm-up, so the returned sample
+    count is slots * (requests_per_client - 1).
+    """
+    if requests_per_client < 2:
+        raise ValueError("requests_per_client must be at least 2 (one is warm-up)")
+
+    collected: list[RequestSample] = []
+    spans: list[tuple[float, float]] = []
+
+    async def client_loop(index: int, client: httpx.AsyncClient) -> None:
+        for round_index in range(requests_per_client):
+            prompt = build_prompt(index * 1000 + round_index, prompt_tokens)
+            started = time.perf_counter()
+            sample = await one_request(client, base_url, model, prompt, max_tokens)
+            finished = time.perf_counter()
+            if round_index > 0:  # discard warm-up
+                collected.append(sample)
+                spans.append((started, finished))
+
+    # Separate clients so each concurrent stream gets its own connection.
+    clients = [httpx.AsyncClient(timeout=httpx.Timeout(600.0)) for _ in range(slots)]
+    try:
+        await asyncio.gather(*(client_loop(i, clients[i]) for i in range(slots)))
+    finally:
+        await asyncio.gather(*(c.aclose() for c in clients), return_exceptions=True)
+
+    if not spans:
+        raise RuntimeError("no measured requests completed")
+    # Wall time of the measured window: earliest measured start to latest
+    # measured end. Warm-up requests are excluded from both ends, so the window
+    # covers only the period when every slot was already loaded.
+    measured_wall_s = max(end for _, end in spans) - min(start for start, _ in spans)
+    return summarize(collected, measured_wall_s, slots, ctx_per_slot)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="One slot-count load point.")
+    parser.add_argument("--base-url", default="http://hpz440:8080")
+    parser.add_argument("--model", required=True, help="llama.cpp container model path")
+    parser.add_argument("--slots", type=int, required=True)
+    parser.add_argument("--ctx-per-slot", type=int, required=True)
+    parser.add_argument("--requests-per-client", type=int, default=5)
+    parser.add_argument("--prompt-tokens", type=int, default=1000)
+    parser.add_argument("--max-tokens", type=int, default=300)
+    args = parser.parse_args(argv)
+
+    result = asyncio.run(
+        run_slot_point(
+            base_url=args.base_url,
+            model=args.model,
+            slots=args.slots,
+            ctx_per_slot=args.ctx_per_slot,
+            requests_per_client=args.requests_per_client,
+            prompt_tokens=args.prompt_tokens,
+            max_tokens=args.max_tokens,
+        )
+    )
+    json.dump(result, sys.stdout)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 8: Run the whole suite to verify it passes**
+
+Run: `uv run pytest -v` from `bench/`
+Expected: PASS, 27 passed (11 in `test_cost.py`, 5 in `test_prices.py`, 7 in `test_metrics.py`, 4 in `test_load.py`).
+
+If `test_one_request_measures_ttft_and_usage` fails on `ttft_ms`, the stub's chunked framing is at fault, not `load.py` — check that each SSE event is written as its own HTTP chunk and flushed.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add bench/metrics.py bench/load.py bench/tests/test_metrics.py bench/tests/test_load.py
+git commit -m "feat(bench): concurrent streaming load generator and metrics"
+```
+
+---
+
+### Task 5: Sweep orchestration
+
+The PowerShell wrapper owns everything that touches the server: `.env` rewriting, container restarts, GPU telemetry, and the restore. It must restore `.env` even on Ctrl+C, because leaving `LLM_CONTEXT_SIZE` at 16384 would silently change Jarvis's token budget.
+
+**Files:**
+- Create: `scripts/stress-test.ps1`
+- Modify: `tests/assert-script-contracts.ps1`
+- Modify: `tests/assert-project-shape.ps1`
+
+**Interfaces:**
+- Consumes: `bench/load.py`'s CLI — `uv run python -m bench.load --base-url --model --slots --ctx-per-slot --requests-per-client --prompt-tokens --max-tokens`, printing one JSON object on stdout.
+- Produces: `benchmarks/stress-<stamp>.json`, an object `{ "started", "model", "ctx_per_slot", "price_per_kwh", "capex_usd", "points": [ <summarize dict merged with gpu_watts_* and vram_mb_max> ] }`.
+
+- [ ] **Step 1: Write the failing contract assertions**
+
+Append to `tests/assert-script-contracts.ps1`:
+
+```powershell
+Assert-FileContains 'scripts/stress-test.ps1' 'LLM_PARALLEL'
+Assert-FileContains 'scripts/stress-test.ps1' 'hpz440:8080'
+Assert-FileContains 'scripts/stress-test.ps1' 'finally'
+Assert-FileContains 'scripts/stress-test.ps1' 'bench\.load'
+Assert-FileContains 'scripts/stress-test.ps1' 'ignore the prefill'
+Assert-FileNotContains 'scripts/stress-test.ps1' 'localhost:8080'
+```
+
+Append to `tests/assert-project-shape.ps1`, before the `$Gitkeep` block:
+
+```powershell
+Assert-FileContains 'README.md' 'scripts/stress-test\.ps1'
+Assert-FileContains 'docs/operations.md' 'scripts/stress-test\.ps1'
+```
+
+- [ ] **Step 2: Run both to verify they fail**
+
+Run: `pwsh -NoProfile -File tests/assert-script-contracts.ps1`
+Expected: FAIL with `Missing file: scripts/stress-test.ps1`
+
+- [ ] **Step 3: Write the wrapper**
+
+Create `scripts/stress-test.ps1`:
+
+```powershell
+<#
+Concurrency sweep for the llama.cpp server on the HPZ440.
+
+For each slot count it rewrites .env, restarts llm-api, samples GPU power in a
+throwaway container, runs bench/load.py against http://hpz440:8080, and merges
+the results. .env is restored byte-for-byte in the finally block, including on
+Ctrl+C -- LLM_CONTEXT_SIZE also feeds JARVIS_CONTEXT_TOKENS, so leaving it
+raised would silently change Jarvis's budget.
+
+Jarvis is unavailable while this runs. The sweep takes several minutes.
+#>
+[CmdletBinding()]
+param(
+    [int[]]$Slots = @(1, 2, 4, 8),
+    [int]$CtxPerSlot = 2048,
+    [int]$RequestsPerClient = 5,
+    [int]$PromptTokens = 1000,
+    [int]$MaxTokens = 300,
+    [int]$IdleSampleSeconds = 20
+)
+
+$ErrorActionPreference = 'Stop'
+$Root = Split-Path -Parent $PSScriptRoot
+$EnvPath = Join-Path $Root '.env'
+if (-not (Test-Path $EnvPath)) { throw 'Missing .env. Copy .env.example to .env first.' }
+
+$ContextMatch = Select-String -Path $EnvPath -Pattern '^DOCKER_CONTEXT=(.+)$'
+$Context = if ($ContextMatch) { $ContextMatch.Matches.Groups[1].Value } else { 'hpz440' }
+$ModelMatch = Select-String -Path $EnvPath -Pattern '^LLM_MODEL_PATH=(.+)$'
+if (-not $ModelMatch) { throw 'LLM_MODEL_PATH missing from .env.' }
+$Model = $ModelMatch.Matches.Groups[1].Value
+
+$BaseUrl = 'http://hpz440:8080'
+$CudaImage = 'nvidia/cuda:12.4.1-base-ubuntu22.04'
+$SmiQuery = 'power.draw,utilization.gpu,memory.used'
+
+# Byte-for-byte backup so the restore cannot reformat the operator's file.
+$OriginalEnv = [System.IO.File]::ReadAllBytes($EnvPath)
+
+function Set-EnvKey {
+    param([string]$Name, [string]$Value)
+    $Lines = Get-Content $EnvPath
+    if ($Lines | Where-Object { $_ -match "^$Name=" }) {
+        $Lines = $Lines | ForEach-Object { if ($_ -match "^$Name=") { "$Name=$Value" } else { $_ } }
+    } else {
+        $Lines += "$Name=$Value"
+    }
+    Set-Content -Path $EnvPath -Value $Lines
+}
+
+function Start-GpuSampler {
+    param([int]$Seconds)
+    Start-Job -ScriptBlock {
+        param($Ctx, $Image, $Query, $Secs)
+        docker --context $Ctx run --rm --gpus all $Image `
+            timeout $Secs nvidia-smi --query-gpu=$Query --format=csv,noheader,nounits -l 1
+    } -ArgumentList $Context, $CudaImage, $SmiQuery, $Seconds
+}
+
+function Get-SamplerStats {
+    param($Job)
+    $Lines = Receive-Job -Job $Job -Wait -AutoRemoveJob 2>$null
+    $Watts = @(); $Vram = @()
+    foreach ($Line in $Lines) {
+        $Parts = ($Line -split ',') | ForEach-Object { $_.Trim() }
+        if ($Parts.Count -ge 3 -and $Parts[0] -match '^[\d.]+$') {
+            $Watts += [double]$Parts[0]
+            $Vram += [double]$Parts[2]
+        }
+    }
+    if ($Watts.Count -eq 0) { return $null }
+    [pscustomobject]@{
+        mean = [math]::Round(($Watts | Measure-Object -Average).Average, 2)
+        max  = [math]::Round(($Watts | Measure-Object -Maximum).Maximum, 2)
+        vram = [math]::Round(($Vram | Measure-Object -Maximum).Maximum, 0)
+        n    = $Watts.Count
+    }
+}
+
+function Wait-ForModel {
+    param([int]$TimeoutSeconds = 180)
+    $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $Deadline) {
+        try {
+            Invoke-RestMethod -Uri "$BaseUrl/v1/models" -Method Get -TimeoutSec 5 | Out-Null
+            return $true
+        } catch { Start-Sleep -Seconds 3 }
+    }
+    return $false
+}
+
+$Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$OutputDir = Join-Path $Root 'benchmarks'
+New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+$OutputPath = Join-Path $OutputDir "stress-$Stamp.json"
+$Points = @()
+
+# Idle baseline, taken once before any slot count, with no load on the GPU.
+Write-Host "Sampling idle GPU power for $IdleSampleSeconds s..."
+$IdleStats = Get-SamplerStats (Start-GpuSampler -Seconds $IdleSampleSeconds)
+if ($null -eq $IdleStats) {
+    Write-Warning 'GPU telemetry unavailable. Throughput will still be measured; docs/cost-model.md cannot be regenerated without watts.'
+}
+
+try {
+    foreach ($N in $Slots) {
+        $TotalCtx = $N * $CtxPerSlot
+        Write-Host ""
+        Write-Host "=== $N slot(s), $CtxPerSlot ctx each (total $TotalCtx) ==="
+        Set-EnvKey -Name 'LLM_PARALLEL' -Value "$N"
+        Set-EnvKey -Name 'LLM_CONTEXT_SIZE' -Value "$TotalCtx"
+
+        docker --context $Context compose --env-file .env up -d llm-api
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "llm-api failed to start at $N slots (likely out of VRAM). Recording oom and continuing."
+            $Points += [pscustomobject]@{ slots = $N; ctx_per_slot = $CtxPerSlot; status = 'oom' }
+            continue
+        }
+        if (-not (Wait-ForModel)) {
+            Write-Warning "llm-api did not answer /v1/models at $N slots. Recording unhealthy and stopping the sweep."
+            $Points += [pscustomobject]@{ slots = $N; ctx_per_slot = $CtxPerSlot; status = 'unhealthy' }
+            break
+        }
+
+        # Sample for the expected duration of the load, generously over-estimated;
+        # the sampler exits on its own timeout if the load finishes first.
+        $Sampler = Start-GpuSampler -Seconds (60 * $RequestsPerClient)
+        $Json = & uv --directory (Join-Path $Root 'bench') run python -m bench.load `
+            --base-url $BaseUrl --model $Model --slots $N --ctx-per-slot $CtxPerSlot `
+            --requests-per-client $RequestsPerClient --prompt-tokens $PromptTokens `
+            --max-tokens $MaxTokens
+        $LoadExit = $LASTEXITCODE
+        $LoadStats = Get-SamplerStats $Sampler
+
+        if ($LoadExit -ne 0) {
+            Write-Warning "Load generator failed at $N slots (exit $LoadExit). Recording error and continuing."
+            $Points += [pscustomobject]@{ slots = $N; ctx_per_slot = $CtxPerSlot; status = 'error' }
+            continue
+        }
+
+        $Point = $Json | ConvertFrom-Json
+        $Point | Add-Member -NotePropertyName status -NotePropertyValue 'ok'
+        $Point | Add-Member -NotePropertyName gpu_watts_idle -NotePropertyValue $(if ($IdleStats) { $IdleStats.mean } else { $null })
+        $Point | Add-Member -NotePropertyName gpu_watts_mean -NotePropertyValue $(if ($LoadStats) { $LoadStats.mean } else { $null })
+        $Point | Add-Member -NotePropertyName gpu_watts_max -NotePropertyValue $(if ($LoadStats) { $LoadStats.max } else { $null })
+        $Point | Add-Member -NotePropertyName vram_mb_max -NotePropertyValue $(if ($LoadStats) { $LoadStats.vram } else { $null })
+        $Points += $Point
+
+        Write-Host ("  aggregate {0:N1} tok/s, per-client {1:N1} tok/s, TTFT p95 {2:N0} ms, {3} W mean" -f `
+            $Point.aggregate_output_tps, $Point.per_client_output_tps, $Point.ttft_ms_p95, $Point.gpu_watts_mean)
+        if (-not $Point.prefill_valid) {
+            Write-Warning "  Prefix cache served $($Point.cached_tokens_total) prompt tokens at $N slots -- ignore the prefill rate for this point."
+        }
+    }
+}
+finally {
+    Write-Host ""
+    Write-Host 'Restoring .env and restarting llm-api at production settings...'
+    [System.IO.File]::WriteAllBytes($EnvPath, $OriginalEnv)
+    docker --context $Context compose --env-file .env up -d llm-api
+    if ($LASTEXITCODE -ne 0) { Write-Warning 'llm-api did not restart cleanly. Run scripts/start.ps1.' }
+}
+
+@{
+    started       = $Stamp
+    model         = $Model
+    ctx_per_slot  = $CtxPerSlot
+    prompt_tokens = $PromptTokens
+    max_tokens    = $MaxTokens
+    capex_usd     = 300.0
+    price_per_kwh = 0.17
+    gpu_watts_idle = $(if ($IdleStats) { $IdleStats.mean } else { $null })
+    points        = $Points
+} | ConvertTo-Json -Depth 12 | Set-Content -Path $OutputPath
+
+Write-Host "Sweep written to $OutputPath"
+Write-Host "Next: uv --directory bench run python -m bench.report --sweep $OutputPath"
+```
+
+- [ ] **Step 4: Add the two doc lines the project-shape test now demands**
+
+In `README.md`, in the command list alongside the other `scripts/*.ps1` entries, add:
+
+```
+pwsh -NoProfile -File scripts/stress-test.ps1   # concurrency sweep; rewrites and restores .env, Jarvis is down while it runs
+```
+
+In `docs/operations.md`, near the `scripts/benchmark.ps1` material, add:
+
+```markdown
+### Concurrency sweep
+
+`pwsh -NoProfile -File scripts/stress-test.ps1` measures aggregate throughput at 1, 2, 4, and
+8 llama.cpp slots, holding 2048 tokens of context per slot. It rewrites `LLM_PARALLEL` and
+`LLM_CONTEXT_SIZE` in `.env`, restarts `llm-api` once per slot count, and restores `.env`
+byte-for-byte in a `finally` block. Jarvis shares `LLM_CONTEXT_SIZE`, so Jarvis is
+unavailable for the few minutes the sweep runs. Unlike the other scripts it talks to
+`http://hpz440:8080` directly rather than `localhost`, because an SSH tunnel would become the
+bottleneck at eight concurrent streams.
+```
+
+- [ ] **Step 5: Run both test scripts to verify they pass**
+
+Run: `pwsh -NoProfile -File tests/assert-script-contracts.ps1`
+Expected: PASS
+
+Run: `pwsh -NoProfile -File tests/assert-project-shape.ps1`
+Expected: PASS, `Project guardrail checks passed.`
+
+- [ ] **Step 6: Smoke-test the restore path without a full sweep**
+
+Record the current `.env` hash, run a one-point sweep, and confirm the file comes back identical:
+
+```bash
+sha256sum .env
+```
+
+Run: `pwsh -NoProfile -File scripts/stress-test.ps1 -Slots 1 -RequestsPerClient 2 -IdleSampleSeconds 5`
+
+```bash
+sha256sum .env
+```
+
+Expected: the two hashes match exactly, and `benchmarks/stress-<stamp>.json` exists with one point whose `status` is `ok`.
+
+Then confirm Jarvis recovered:
+
+Run: `pwsh -NoProfile -File scripts/health.ps1`
+Expected: all three endpoints answer.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add scripts/stress-test.ps1 tests/assert-script-contracts.ps1 tests/assert-project-shape.ps1 README.md docs/operations.md
+git commit -m "feat: concurrency sweep script with .env restore and GPU power sampling"
+```
+
+---
+
+### Task 6: Run the sweep and write the comparison
+
+This is the task that produces the answer. It needs the GPU and a healthy stack.
+
+**Files:**
+- Create: `bench/report.py`
+- Create: `bench/tests/test_report.py`
+- Create: `docs/cost-model.md`
+- Modify: `docs/models.md`
+- Modify: `tests/assert-project-shape.ps1`
+- Modify: `docs/superpowers/specs/2026-10-04-stress-test-cost-model-design.md` (Status line)
+
+**Interfaces:**
+- Consumes: `bench.cost` (all functions listed in Task 2), `bench.prices.load_prices`, and a sweep JSON of the shape Task 5 produces.
+- Produces, in `bench/report.py`:
+  - `def throughput_rows(sweep: dict) -> list[dict]` — one row per `ok` point
+  - `def break_even_rows(sweep: dict, hosted: list[HostedPrice], hours_active_options: list[float]) -> list[dict]`
+  - `def main(argv: list[str] | None = None) -> int` — `--sweep <path>` prints both Markdown tables on stdout
+
+- [ ] **Step 1: Write the failing report test**
+
+Create `bench/tests/test_report.py`:
+
+```python
+import pytest
+
+from bench import report
+from bench.prices import HostedPrice
+
+
+SWEEP = {
+    "model": "/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+    "ctx_per_slot": 2048,
+    "capex_usd": 300.0,
+    "price_per_kwh": 0.17,
+    "gpu_watts_idle": 12.0,
+    "points": [
+        {
+            "status": "ok",
+            "slots": 1,
+            "ctx_per_slot": 2048,
+            "aggregate_output_tps": 62.0,
+            "per_client_output_tps": 62.0,
+            "prefill_tps": 850.0,
+            "prefill_valid": True,
+            "ttft_ms_p50": 1200.0,
+            "ttft_ms_p95": 1400.0,
+            "latency_ms_p50": 5000.0,
+            "latency_ms_p95": 5200.0,
+            "gpu_watts_mean": 170.0,
+            "vram_mb_max": 5600,
+        },
+        {"status": "oom", "slots": 8, "ctx_per_slot": 2048},
+    ],
+}
+
+HOSTED = [
+    HostedPrice(
+        provider="ExampleHost",
+        model="Llama-3.1-8B-Instruct",
+        usd_per_mtok_in=0.20,
+        usd_per_mtok_out=0.20,
+        source_url="https://example.invalid/pricing",
+        retrieved="2026-10-04",
+    )
+]
+
+
+def test_throughput_rows_skips_failed_points():
+    rows = report.throughput_rows(SWEEP)
+    assert len(rows) == 1
+    assert rows[0]["slots"] == 1
+    assert rows[0]["aggregate_output_tps"] == pytest.approx(62.0)
+
+
+def test_break_even_uses_peak_watts_from_the_sweep():
+    rows = report.break_even_rows(SWEEP, HOSTED, hours_active_options=[60.0])
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["provider"] == "ExampleHost"
+    assert row["hours_active"] == pytest.approx(60.0)
+    # 12 W idle, 170 W load, 60 h active, $0.17/kWh, $300/36 mo => $11.4137/mo.
+    assert row["monthly_cost_usd"] == pytest.approx(11.4137, abs=1e-3)
+    assert row["hosted_per_mixed_mtok"] == pytest.approx(0.20)
+    assert row["break_even_mixed_mtok"] == pytest.approx(57.0685, abs=1e-2)
+    # 57.0685 Mmix x 769.23 requests/Mmix
+    assert row["break_even_requests_per_month"] == pytest.approx(43899, rel=1e-3)
+
+
+def test_break_even_raises_without_watts():
+    broken = {**SWEEP, "gpu_watts_idle": None}
+    with pytest.raises(ValueError, match="watts"):
+        report.break_even_rows(broken, HOSTED, hours_active_options=[60.0])
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `uv run pytest tests/test_report.py -v` from `bench/`
+Expected: collection error — `ModuleNotFoundError: No module named 'bench.report'`
+
+- [ ] **Step 3: Write report.py**
+
+Create `bench/report.py`:
+
+```python
+"""Turn a sweep JSON plus the price file into the Markdown tables for the docs."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from bench import cost
+from bench.prices import HostedPrice, load_prices
+
+HOURS_ACTIVE_OPTIONS = [30.0, 100.0, 300.0, 720.0]
+
+
+def throughput_rows(sweep: dict) -> list[dict]:
+    """One row per successfully measured slot count."""
+    return [p for p in sweep.get("points", []) if p.get("status") == "ok"]
+
+
+def _peak_load_watts(sweep: dict) -> float:
+    watts = [
+        p["gpu_watts_mean"]
+        for p in throughput_rows(sweep)
+        if p.get("gpu_watts_mean") is not None
+    ]
+    if not watts:
+        raise ValueError("sweep has no gpu_watts_mean; cannot model cost without watts")
+    return max(watts)
+
+
+def break_even_rows(
+    sweep: dict,
+    hosted: list[HostedPrice],
+    hours_active_options: list[float] | None = None,
+) -> list[dict]:
+    idle = sweep.get("gpu_watts_idle")
+    if idle is None:
+        raise ValueError("sweep has no gpu_watts_idle; cannot model cost without watts")
+    load_watts = _peak_load_watts(sweep)
+    capex = float(sweep.get("capex_usd", cost.CAPEX_USD))
+    kwh = float(sweep.get("price_per_kwh", cost.PRICE_PER_KWH))
+    options = hours_active_options or HOURS_ACTIVE_OPTIONS
+    per_mmix_requests = cost.requests_per_mixed_mtok()
+
+    rows: list[dict] = []
+    for hours in options:
+        monthly = cost.monthly_cost_of_ownership(
+            capex,
+            watts_idle=float(idle),
+            watts_load=load_watts,
+            hours_active=hours,
+            price_per_kwh=kwh,
+        )
+        for price in hosted:
+            per_mmix = cost.hosted_cost_per_mixed_mtok(
+                price.usd_per_mtok_in, price.usd_per_mtok_out
+            )
+            mmix = cost.break_even_mixed_mtok(monthly, per_mmix)
+            rows.append(
+                {
+                    "provider": price.provider,
+                    "model": price.model,
+                    "hours_active": hours,
+                    "monthly_cost_usd": monthly,
+                    "hosted_per_mixed_mtok": per_mmix,
+                    "break_even_mixed_mtok": mmix,
+                    "break_even_requests_per_month": mmix * per_mmix_requests,
+                    "source_url": price.source_url,
+                    "retrieved": price.retrieved,
+                }
+            )
+    return rows
+
+
+def _throughput_table(sweep: dict) -> str:
+    lines = [
+        "| Slots | Ctx/slot | Aggregate tok/s | Per-client tok/s | Prefill tok/s | TTFT p50 | TTFT p95 | GPU W mean | VRAM MB |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for p in throughput_rows(sweep):
+        prefill = f"{p['prefill_tps']:.0f}" if p.get("prefill_valid") else "n/a (cached)"
+        lines.append(
+            f"| {p['slots']} | {p['ctx_per_slot']} | {p['aggregate_output_tps']:.1f} | "
+            f"{p['per_client_output_tps']:.1f} | {prefill} | {p['ttft_ms_p50']:.0f} ms | "
+            f"{p['ttft_ms_p95']:.0f} ms | {p.get('gpu_watts_mean')} | {p.get('vram_mb_max')} |"
+        )
+    return "\n".join(lines)
+
+
+def _break_even_table(rows: list[dict]) -> str:
+    lines = [
+        "| Provider / model | Active h/month | Owning $/month | Hosted $/mixed Mtok | Break-even Mtok/month | Break-even requests/month |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for r in rows:
+        lines.append(
+            f"| {r['provider']} {r['model']} | {r['hours_active']:.0f} | "
+            f"${r['monthly_cost_usd']:.2f} | ${r['hosted_per_mixed_mtok']:.4f} | "
+            f"{r['break_even_mixed_mtok']:.1f} | {r['break_even_requests_per_month']:,.0f} |"
+        )
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Markdown tables from a sweep.")
+    parser.add_argument("--sweep", required=True)
+    parser.add_argument("--prices", default=str(Path(__file__).resolve().parent / "prices.json"))
+    args = parser.parse_args(argv)
+
+    sweep = json.loads(Path(args.sweep).read_text(encoding="utf-8"))
+    hosted, _hardware = load_prices(args.prices)
+
+    print("## Throughput\n")
+    print(_throughput_table(sweep))
+    print("\n## Break-even\n")
+    print(_break_even_table(break_even_rows(sweep, hosted)))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 4: Run the full suite**
+
+Run: `uv run pytest -v` from `bench/`
+Expected: PASS, zero failures.
+
+- [ ] **Step 5: Commit the report module before the hardware run**
+
+```bash
+git add bench/report.py bench/tests/test_report.py
+git commit -m "feat(bench): Markdown report tables for throughput and break-even"
+```
+
+- [ ] **Step 6: Run the real sweep**
+
+Confirm the stack is healthy first:
+
+Run: `pwsh -NoProfile -File scripts/health.ps1`
+Expected: all three endpoints answer.
+
+Then:
+
+Run: `pwsh -NoProfile -File scripts/stress-test.ps1`
+
+Expected: four `=== N slot(s) ===` blocks, each printing aggregate tok/s and mean watts, then `Restoring .env...`, then `Sweep written to benchmarks/stress-<stamp>.json`.
+
+If the 8-slot point reports `oom`, that is a real result — record it rather than retrying at a smaller context. If any point warns about the prefix cache, `build_prompt` is not producing distinct enough prompts; fix `load.py` and re-run before writing the docs.
+
+Verify `.env` survived:
+
+```bash
+grep -E '^(LLM_PARALLEL|LLM_CONTEXT_SIZE)=' .env
+```
+
+Expected: `LLM_PARALLEL=1` and `LLM_CONTEXT_SIZE=8192`.
+
+- [ ] **Step 7: Generate the tables**
+
+Run: `uv --directory bench run python -m bench.report --sweep benchmarks/stress-<stamp>.json`
+
+Expected: two Markdown tables on stdout. Keep the output; it goes into the two docs verbatim.
+
+- [ ] **Step 8: Append the sweep rows to docs/models.md**
+
+Add one row per measured slot count to the existing Measured table in `docs/models.md`, after the two existing rows. Use the real numbers from Step 7. The `Context` column holds the **total** context, and the Notes column must state the slot count and that per-slot context is 2048:
+
+```markdown
+| Qwen2.5-7B-Instruct | Q4_K_M | 2048 | <N> | 2026-10-04 | 1 slot. Sweep baseline, 2048 ctx/slot, 1000-token prompts, 300 tokens with ignore_eos. `benchmarks/stress-<stamp>.json`. |
+```
+
+Then add a short paragraph under the table:
+
+```markdown
+Concurrency: `scripts/stress-test.ps1` measured aggregate throughput at 1, 2, 4, and 8 slots
+with 2048 tokens of context each. See `docs/cost-model.md` for the full table and what it
+means for the economics. The single-slot rows above at context 4096 and 8192 are not directly
+comparable to the sweep rows, which all run at 2048 per slot.
+```
+
+- [ ] **Step 9: Write docs/cost-model.md**
+
+Create `docs/cost-model.md` with this structure, filling every number from Step 7's output and `bench/prices.json`:
+
+````markdown
+# Cost Model: When Does the HPZ440 Beat a Hosted Model?
+
+Measured 2026-10-04 on the RTX 3060 12GB with Qwen2.5-7B-Instruct Q4_K_M.
+Source data: `benchmarks/stress-<stamp>.json`. Regenerate with
+`uv --directory bench run python -m bench.report --sweep <file>`.
+
+## The question
+
+"Tokens per dollar of hardware" is unbounded for a box you already own — run it longer and
+the figure improves without limit. The decision-relevant form is the break-even volume: the
+monthly token volume at which paying a hosted provider costs the same as amortized hardware
+plus electricity.
+
+## Assumptions
+
+| Input | Value | Source |
+| --- | --- | --- |
+| Capex | $300 | RTX 3060 12GB, purchased 2026-09-29 |
+| Amortization | 36 months | Assumption |
+| Electricity | $0.17/kWh | Conrad's rate, 2026-10 |
+| Powered hours | 720/month | The HPZ440 stays on |
+| Token mix | 1000 in / 300 out per request | Jarvis triage shape: a message body in, a short classification out |
+| Idle GPU draw | <N> W | Measured, `nvidia-smi`, no load |
+| Load GPU draw | <N> W | Measured, peak sweep mean |
+
+## Throughput
+
+<the throughput table from Step 7>
+
+<One paragraph: did throughput scale with slots, and where did it stop scaling? If the 8-slot
+point OOMed or regressed, say so and give the number.>
+
+## Break-even
+
+<the break-even table from Step 7>
+
+<One paragraph naming the headline figure: at Jarvis's actual load, which side wins, and by
+how much.>
+
+## What this does not say
+
+- **GPU-only watts.** `nvidia-smi` reports the card, not the HP Z440 around it. Whole-box
+  draw is materially higher, so the owning cost above is a **lower bound** and the real
+  break-even volume is **higher** than the table says. A wall meter would close this.
+- **Quality is not matched to frontier models.** Every hosted row is a Llama-3.1-8B or
+  Qwen-7B-class instruct model — the same tier as what runs here. Frontier APIs are excluded
+  on purpose: quoting their $/Mtok beside a 7B's throughput would be a comparison of two
+  different things.
+- **Local-hardware rows are published figures, not measured here.** Only the RTX 3060 row in
+  `bench/prices.json` has `measured_here: true`.
+- **Hosted prices move.** Every price in `bench/prices.json` carries the URL it came from and
+  the date it was read. Re-read them before relying on this.
+- **Non-price reasons are not modelled.** Mail staying on the LAN, no per-token metering, and
+  no dependency on someone else's uptime are the reasons this box exists. They do not appear
+  in a dollar figure.
+
+## Hardware comparison
+
+<A table from bench/prices.json's hardware entries: name, price, published 7B Q4 decode
+tok/s, tok/s per dollar, source. Mark the 3060 row as the measured one.>
+````
+
+- [ ] **Step 10: Add the doc assertions and run the tests**
+
+Append to `tests/assert-project-shape.ps1`, before the `$Gitkeep` block:
+
+```powershell
+Assert-FileContains 'docs/cost-model.md' '^# Cost Model'
+Assert-FileContains 'docs/cost-model.md' 'lower bound'
+Assert-FileContains 'docs/cost-model.md' 'Break-even'
+Assert-FileContains 'docs/models.md' 'Concurrency'
+```
+
+Run: `pwsh -NoProfile -File tests/assert-project-shape.ps1`
+Expected: PASS
+
+Run: `pwsh -NoProfile -File tests/assert-script-contracts.ps1`
+Expected: PASS
+
+Run: `uv run pytest -v` from `bench/`
+Expected: PASS, zero failures.
+
+Run: `uv run pytest` from `jarvis/`
+Expected: PASS — Jarvis is untouched, but `LLM_CONTEXT_SIZE` was rewritten during the sweep, so confirm nothing regressed.
+
+- [ ] **Step 11: Mark the spec approved**
+
+In `docs/superpowers/specs/2026-10-04-stress-test-cost-model-design.md`, change `Status: Proposed` to:
+
+```
+Status: Implemented
+```
+
+- [ ] **Step 12: Commit**
+
+```bash
+git add docs/cost-model.md docs/models.md tests/assert-project-shape.ps1 docs/superpowers/specs/2026-10-04-stress-test-cost-model-design.md
+git commit -m "docs: measured concurrency sweep and break-even cost model"
+```
+
+- [ ] **Step 13: Confirm benchmarks/ stayed out of git**
+
+```bash
+git status --short benchmarks/
+```
+
+Expected: no output. Raw sweep JSON is gitignored; only the derived tables are committed.
+
+---
+
+## Self-Review Notes
+
+Spec coverage check against `docs/superpowers/specs/2026-10-04-stress-test-cost-model-design.md`:
+
+| Spec requirement | Task |
+| --- | --- |
+| `--parallel ${LLM_PARALLEL:-1}` in compose, `.env.example` key | 1 |
+| Fixed 2048 ctx/slot, sweep 1/2/4/8 | 5 (step 3), 6 (step 6) |
+| `ignore_eos` + fixed `max_tokens` | 4 (`load.py` payload) |
+| Distinct prompt per client, cache self-check | 4 (`build_prompt`, `prefill_valid`) |
+| Target `hpz440:8080`, never localhost | 4 (default), 5 (assertion `Assert-FileNotContains 'localhost:8080'`) |
+| TTFT/latency percentiles | 4 (`metrics.percentile`) |
+| GPU watts incl. idle baseline, VRAM peak | 5 (`Start-GpuSampler`, `Get-SamplerStats`) |
+| `.env` restored in `finally`, incl. Ctrl+C | 5 (step 3 `finally`, step 6 hash check) |
+| Break-even model with the exact formula | 2 |
+| Mix 1000/300, `h_active` swept over 30/100/300/720 | 2 (constants), 6 (`HOURS_ACTIVE_OPTIONS`) |
+| Price provenance enforced, no recalled prices | 3 (`_check_provenance`, `test_shipped_prices_file_is_valid`) |
+| Hosted small-open + other local hardware; no frontier | 3 (step 4 instructions) |
+| GPU-only watts caveat stated as a lower bound | 6 (step 9), asserted in step 10 |
+| Rows into `docs/models.md`, economics into `docs/cost-model.md` | 6 |
+| Failure table: oom, unhealthy, request error, Ctrl+C, no telemetry | 5 (step 3 branches) |
+| Test assertions updated in the same change | 1, 5, 6 |
+
+Out of scope per the spec and absent here by design: context-length sweep, quantization comparison, vLLM/TGI, frontier price rows, whole-box power.
