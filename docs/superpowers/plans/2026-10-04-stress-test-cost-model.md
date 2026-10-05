@@ -1053,6 +1053,7 @@ import httpx
 import pytest
 
 from bench import load
+from bench.metrics import RequestSample
 
 
 CHUNK_DELAY_S = 0.02
@@ -1214,6 +1215,62 @@ def test_run_slot_point_summarizes_all_clients(stub_server):
     # means the clients were measured as if they had not overlapped.
     serial_s = 4 * CHUNKS * CHUNK_DELAY_S
     assert 0.0 < out["wall_seconds"] < serial_s * 0.8
+
+
+def test_run_slot_point_window_excludes_a_straggler_tail(monkeypatch):
+    """The window is the concurrent rounds, not first start to last finish.
+
+    The stub server above gives both clients identical latency, so they advance in
+    lockstep and every aggregation strategy agrees. Unequal clients are what
+    separate them: letting each client run its own rounds lets the fast one finish
+    early while the slow one generates alone, and spanning first start to last
+    finish then divides both clients' tokens by a window that is mostly
+    single-slot. That understates aggregate throughput, and it is the defect the
+    round barrier fixes.
+
+    Fast client 10 ms per request, slow client 100 ms, 3 rounds each with the first
+    discarded. Round-synchronized: two rounds at the slow client's pace, 200 ms.
+    First-start-to-last-finish would be about 290 ms, because the fast client's two
+    measured requests land at 10-30 ms while the slow client's run to 300 ms.
+    """
+    latency_s = {0: 0.01, 1: 0.10}
+
+    def fake_build_prompt(seed: int, approx_tokens: int) -> str:
+        # run_slot_point builds prompts as build_prompt(index * 1000 + round, ...),
+        # so the client index is recoverable and the fake can vary by client.
+        return f"client={seed // 1000}"
+
+    async def fake_one_request(client, base_url, model, prompt, max_tokens):
+        index = int(prompt.split("=")[1])
+        await asyncio.sleep(latency_s[index])
+        return RequestSample(
+            ttft_ms=1.0,
+            latency_ms=latency_s[index] * 1000,
+            output_tokens=max_tokens,
+            prompt_tokens=1000,
+            prompt_ms=1.0,
+            cached_tokens=0,
+        )
+
+    monkeypatch.setattr(load, "build_prompt", fake_build_prompt)
+    monkeypatch.setattr(load, "one_request", fake_one_request)
+
+    out = asyncio.run(
+        load.run_slot_point(
+            base_url="http://unused.invalid",
+            model="stub",
+            slots=2,
+            ctx_per_slot=2048,
+            requests_per_client=3,
+            prompt_tokens=10,
+            max_tokens=30,
+        )
+    )
+
+    assert out["requests"] == 4
+    assert out["wall_seconds"] == pytest.approx(0.20, abs=0.06)
+    # ~0.29 would mean the straggler's solo tail is back inside the window.
+    assert out["wall_seconds"] < 0.26
 ```
 
 - [ ] **Step 6: Run it to verify it fails**
@@ -1501,7 +1558,7 @@ if __name__ == "__main__":
 - [ ] **Step 9: Run the whole suite to verify it passes**
 
 Run: `uv run pytest -v` from `bench/`
-Expected: PASS, 38 passed (11 in `test_cost.py`, 10 in `test_prices.py`, 10 in `test_metrics.py`, 7 in `test_load.py`).
+Expected: PASS, 39 passed (11 in `test_cost.py`, 10 in `test_prices.py`, 10 in `test_metrics.py`, 8 in `test_load.py`).
 
 Then confirm against the live server that `--prompt-tokens 1000` now sends close to 1000
 tokens, since that is the claim the writeup makes:
