@@ -569,6 +569,14 @@ def test_rejects_impossible_retrieved_date(tmp_path):
         prices.load_prices(_write(tmp_path, payload))
 
 
+def test_rejects_undashed_retrieved_date(tmp_path):
+    """A real date in the wrong shape. date.fromisoformat alone accepts this."""
+    payload = json.loads(json.dumps(GOOD))
+    payload["hosted"][0]["retrieved"] = "20261004"
+    with pytest.raises(ValueError, match="retrieved"):
+        prices.load_prices(_write(tmp_path, payload))
+
+
 def test_shipped_prices_file_is_valid():
     """The committed prices.json must itself satisfy the provenance rule."""
     path = Path(prices.__file__).resolve().parent / "prices.json"
@@ -597,9 +605,12 @@ recalled from memory cannot reach the writeup.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 @dataclass(frozen=True)
@@ -634,12 +645,15 @@ def _require(record: dict, field: str, label: str) -> str:
 
 def _check_retrieved(record: dict, label: str) -> str:
     retrieved = str(record.get("retrieved", "") or "").strip()
+    # Two checks, because neither alone is enough: fromisoformat accepts "20261004",
+    # and the regex alone accepts a well-shaped impossible day like 2026-02-30.
+    if not _DATE.match(retrieved):
+        raise ValueError(f"{label}: retrieved must be YYYY-MM-DD, got {retrieved!r}")
     try:
-        # Rejects both the wrong shape and a well-shaped impossible date like 2026-02-30.
         date.fromisoformat(retrieved)
     except ValueError:
         raise ValueError(
-            f"{label}: retrieved must be a real YYYY-MM-DD date, got {retrieved!r}"
+            f"{label}: retrieved must be a real calendar date, got {retrieved!r}"
         ) from None
     return retrieved
 
@@ -760,7 +774,7 @@ present its own page must be named.
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_prices.py -v` from `bench/`
-Expected: PASS, 9 passed. `test_shipped_prices_file_is_valid` passing proves every committed price has a source and a date.
+Expected: PASS, 10 passed. `test_shipped_prices_file_is_valid` passing proves every committed price has a source and a date.
 
 - [ ] **Step 6: Commit**
 
