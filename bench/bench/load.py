@@ -60,7 +60,15 @@ def build_prompt(seed: int, approx_tokens: int) -> str:
 
     Deterministic in the seed, so a rerun of the same sweep point is comparable.
     """
-    rng = random.Random(seed)
+    # Both parameters seed the generator. Seeding on `seed` alone makes a longer
+    # prompt a literal prefix-extension of a shorter one at the same seed, so a run
+    # at a new --prompt-tokens value is served from the previous run's cache on a
+    # server that has not restarted: measured 62.3% cached, then 99.9% on a repeat.
+    #
+    # (`random.Random((seed, approx_tokens))` as the brief writes it raises TypeError on
+    # Python 3.13 -- tuples are not a supported seed type; the f-string is the same idea
+    # and, since random.seed hashes str via SHA-512, is deterministic across processes.)
+    rng = random.Random(f"{seed}:{approx_tokens}")
     target_chars = int(approx_tokens * _CHARS_PER_TOKEN)
     parts = [f"Note {rng.randrange(10 ** 9)}. Summarize these notes."]
     size = len(parts[0])

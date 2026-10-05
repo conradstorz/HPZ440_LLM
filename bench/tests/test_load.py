@@ -100,6 +100,19 @@ def test_build_prompt_is_deterministic():
     assert load.build_prompt(7, 1000) == load.build_prompt(7, 1000)
 
 
+def test_build_prompt_of_different_sizes_shares_no_long_run():
+    """A size change must not produce a prefix-extension of the smaller prompt.
+
+    Seeding on the seed alone did exactly that, so re-running a sweep at a new
+    --prompt-tokens value on a server that had not restarted was served 62.3% from
+    the previous run's cache, rising to 99.9% on a repeat.
+    """
+    short = load.build_prompt(7, 600)
+    long = load.build_prompt(7, 1000)
+    assert not _shares_long_run(short, long)
+    assert not long.startswith(short[:400])
+
+
 def test_build_prompt_is_roughly_the_requested_length():
     prompt = load.build_prompt(0, 1000)
     # Sized by the measured 6.55 chars/token, so 1000 tokens is ~6550 characters.
