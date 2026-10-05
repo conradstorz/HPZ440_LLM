@@ -1677,6 +1677,13 @@ $Model = $ModelMatch.Matches.Groups[1].Value
 $BaseUrl = 'http://hpz440:8080'
 $CudaImage = 'nvidia/cuda:12.4.1-base-ubuntu22.04'
 $SmiQuery = 'power.draw,utilization.gpu,memory.used'
+# A literal comma-separated bareword passed straight into a Start-Job scriptblock
+# gets re-tokenized as a PowerShell array and lands in argv as three separate
+# tokens ("--format=csv", "noheader", "nounits"), which nvidia-smi rejects with
+# "Option noheader is not recognized". Routing it through a variable, exactly like
+# $SmiQuery above, keeps it one opaque token. Verified live: the literal form
+# reproduces the error every time; this form does not.
+$SmiFormat = 'csv,noheader,nounits'
 
 # Byte-for-byte backup so the restore cannot reformat the operator's file.
 $OriginalEnv = [System.IO.File]::ReadAllBytes($EnvPath)
@@ -1689,7 +1696,14 @@ function Set-EnvKey {
     } else {
         $Lines += "$Name=$Value"
     }
-    Set-Content -Path $EnvPath -Value $Lines
+    # Set-Content writes CRLF by default on Windows, which would convert every
+    # other line in the file too -- including LLM_MODEL_PATH. A trailing \r riding
+    # along in a value that docker compose passes into the container's command
+    # array breaks llama.cpp's --model argument. Write LF explicitly so a mid-sweep
+    # rewrite cannot corrupt the file docker compose is about to read, independent
+    # of the byte-for-byte restore in the finally block below.
+    $Text = ($Lines -join "`n") + "`n"
+    [System.IO.File]::WriteAllText($EnvPath, $Text)
 }
 
 # The sampler runs unbounded and is killed explicitly, so it always outlives the load. A
@@ -1700,10 +1714,10 @@ $SamplerName = 'hpz440-bench-smi'
 function Start-GpuSampler {
     docker --context $Context rm -f $SamplerName 2>$null | Out-Null
     Start-Job -ScriptBlock {
-        param($Ctx, $Image, $Query, $Name)
+        param($Ctx, $Image, $Query, $Format, $Name)
         docker --context $Ctx run --rm --name $Name --gpus all $Image `
-            nvidia-smi --query-gpu=$Query --format=csv,noheader,nounits -l 1
-    } -ArgumentList $Context, $CudaImage, $SmiQuery, $SamplerName
+            nvidia-smi --query-gpu=$Query --format=$Format -l 1
+    } -ArgumentList $Context, $CudaImage, $SmiQuery, $SmiFormat, $SamplerName
 }
 
 function Stop-GpuSampler {
