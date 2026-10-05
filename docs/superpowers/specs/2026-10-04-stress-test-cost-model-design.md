@@ -103,6 +103,12 @@ For each `N` in `1, 2, 4, 8`:
    for a p95 even at `N = 1`.
 5. Sample GPU telemetry at 1 Hz throughout, in parallel with the load.
 
+Rounds are synchronized across clients: every slot issues its request for a round
+together, and the round's window runs from the earliest start to the latest finish.
+Letting each client run its own rounds independently would leave the slowest client
+generating alone while the others idle, and that solo tail inside the measured window
+understates aggregate throughput -- most severely when there are few rounds.
+
 Then restore `.env` to its original bytes and bring `llm-api` back up at
 `LLM_CONTEXT_SIZE=8192, LLM_PARALLEL=1`. This happens in a `finally` block, including on
 Ctrl+C.
@@ -123,7 +129,8 @@ Per sweep point, written to `benchmarks/stress-<stamp>.json`:
 | `ctx_per_slot` | `--ctx-size / slots` |
 | `aggregate_output_tps` | total generated tokens across clients / wall time of the round |
 | `per_client_output_tps` | aggregate / slots |
-| `prefill_tps` | summed `timings.prompt_n` / summed `timings.prompt_ms` |
+| `prefill_tps` | prompt tokens **actually computed** (total minus cached) / summed `timings.prompt_ms`. Including cached tokens would inflate the rate by `1/(1 - cached_share)` |
+| `prefill_tokens_computed` | prompt tokens the GPU actually computed, after subtracting cache hits |
 | `prompt_tokens_mean` | prompt tokens actually sent per request, as the tokenizer counted them -- the writeup quotes this rather than the requested size |
 | `ttft_ms_p50`, `ttft_ms_p95` | first SSE delta per request |
 | `latency_ms_p50`, `latency_ms_p95` | request start to final chunk |

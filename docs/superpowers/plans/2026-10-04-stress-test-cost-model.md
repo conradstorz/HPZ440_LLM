@@ -858,10 +858,12 @@ def test_summarize_aggregate_throughput():
 
 
 def test_summarize_prefill_rate():
-    # 1000 prompt tokens in 1000 ms = 1000 tok/s, per request; 4 requests is the same rate.
+    # Nothing cached: 1000 prompt tokens computed in 1000 ms = 1000 tok/s per
+    # request, and 4 requests at that rate is still 1000 tok/s.
     samples = [_sample() for _ in range(4)]
     out = summarize(samples, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
     assert out["prefill_tps"] == pytest.approx(1000.0)
+    assert out["prefill_tokens_computed"] == 4000
 
 
 def test_summarize_flags_cache_contamination():
@@ -872,6 +874,28 @@ def test_summarize_flags_cache_contamination():
     out = summarize(dirty, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
     assert out["prefill_valid"] is False
     assert out["cached_tokens_total"] == 2000
+
+
+def test_summarize_prefill_rate_counts_only_computed_tokens():
+    """Cached tokens were not computed, so they must not inflate the rate.
+
+    timings.prompt_ms covers only the computation. Including cached tokens in the
+    numerator overstates prefill by 1/(1 - cached_share).
+    """
+    # 4 requests x 1000 prompt tokens, a quarter of them served from cache, each
+    # reporting 1000 ms of prefill compute: 3000 computed tokens over 4.0 s.
+    samples = [_sample(cached_tokens=250) for _ in range(4)]
+    out = summarize(samples, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
+    assert out["prefill_tokens_computed"] == 3000
+    assert out["prefill_tps"] == pytest.approx(750.0)
+
+
+def test_summarize_rejects_a_run_with_no_prompt_accounting():
+    """Absent prompt counts are not a clean run; they are no measurement at all."""
+    samples = [_sample(prompt_tokens=0, cached_tokens=0, prompt_ms=0.0) for _ in range(4)]
+    out = summarize(samples, wall_seconds=10.0, slots=2, ctx_per_slot=2048)
+    assert out["prefill_valid"] is False
+    assert out["prefill_tps"] is None
 
 
 def test_summarize_tolerates_the_measured_cache_floor():
@@ -969,8 +993,23 @@ def summarize(
     cached_total = sum(s.cached_tokens for s in samples)
 
     aggregate_tps = output_total / wall_seconds
-    prefill_tps = (prompt_total / (prompt_ms_total / 1000.0)) if prompt_ms_total > 0 else None
-    contaminated = prompt_total > 0 and (cached_total / prompt_total) > CACHE_CONTAMINATION_LIMIT
+
+    # Only the uncached tokens were actually computed, and timings.prompt_ms covers
+    # only that computation. Dividing ALL prompt tokens by it inflates the rate by
+    # 1/(1 - cached_share): a silent 1.33x even at the 25% share this still calls
+    # valid, and 24x at the 99.9% share a shared-prefix bug once produced.
+    computed_prompt_tokens = prompt_total - cached_total
+    prefill_tps = (
+        computed_prompt_tokens / (prompt_ms_total / 1000.0)
+        if prompt_ms_total > 0 and computed_prompt_tokens > 0
+        else None
+    )
+
+    # No prompt accounting means there is no prefill measurement to trust, so an
+    # absent count is invalid rather than vacuously clean.
+    contaminated = (
+        prompt_total <= 0 or (cached_total / prompt_total) > CACHE_CONTAMINATION_LIMIT
+    )
 
     return {
         "slots": slots,
@@ -985,6 +1024,7 @@ def summarize(
         "aggregate_output_tps": aggregate_tps,
         "per_client_output_tps": aggregate_tps / slots,
         "prefill_tps": prefill_tps,
+        "prefill_tokens_computed": computed_prompt_tokens,
         "cached_tokens_total": cached_total,
         "prefill_valid": not contaminated,
         "ttft_ms_p50": percentile([s.ttft_ms for s in samples], 50),
@@ -1077,8 +1117,14 @@ def stub_server():
 
 
 def _shares_long_run(a: str, b: str, run: int = 200) -> bool:
-    """Does any 200-character window of a appear anywhere in b?"""
-    return any(a[i : i + run] in b for i in range(0, len(a) - run, run))
+    """Does any `run`-character window of a appear anywhere in b?
+
+    Every offset, not every `run`-th offset: a window-aligned scan misses a shared
+    run straddling its boundaries. Short inputs compare whole.
+    """
+    if len(a) <= run or len(b) <= run:
+        return a in b or b in a
+    return any(a[i : i + run] in b for i in range(len(a) - run + 1))
 
 
 def test_build_prompt_is_distinct_per_seed():
@@ -1161,6 +1207,13 @@ def test_run_slot_point_summarizes_all_clients(stub_server):
     assert out["slots"] == 2
     assert out["output_tokens_total"] == 4 * CHUNKS
     assert out["prefill_valid"] is True
+
+    # The window must be the two concurrent rounds, not the four requests end to
+    # end. Four serial requests would take about 4 x CHUNKS x CHUNK_DELAY_S; two
+    # concurrent rounds take about half that, so anything near the serial figure
+    # means the clients were measured as if they had not overlapped.
+    serial_s = 4 * CHUNKS * CHUNK_DELAY_S
+    assert 0.0 < out["wall_seconds"] < serial_s * 0.8
 ```
 
 - [ ] **Step 6: Run it to verify it fails**
@@ -1372,31 +1425,45 @@ async def run_slot_point(
         raise ValueError("requests_per_client must be at least 2 (one is warm-up)")
 
     collected: list[RequestSample] = []
-    spans: list[tuple[float, float]] = []
+    round_spans: list[tuple[float, float]] = []
 
-    async def client_loop(index: int, client: httpx.AsyncClient) -> None:
-        for round_index in range(requests_per_client):
-            prompt = build_prompt(index * 1000 + round_index, prompt_tokens)
-            started = time.perf_counter()
-            sample = await one_request(client, base_url, model, prompt, max_tokens)
-            finished = time.perf_counter()
-            if round_index > 0:  # discard warm-up
-                collected.append(sample)
-                spans.append((started, finished))
+    async def one(
+        index: int, round_index: int, client: httpx.AsyncClient
+    ) -> tuple[RequestSample, float, float]:
+        prompt = build_prompt(index * 1000 + round_index, prompt_tokens)
+        started = time.perf_counter()
+        sample = await one_request(client, base_url, model, prompt, max_tokens)
+        return sample, started, time.perf_counter()
 
     # Separate clients so each concurrent stream gets its own connection.
     clients = [httpx.AsyncClient(timeout=httpx.Timeout(600.0)) for _ in range(slots)]
     try:
-        await asyncio.gather(*(client_loop(i, clients[i]) for i in range(slots)))
+        # One round at a time, all slots together. Letting each client run its own
+        # rounds independently leaves the slowest client finishing alone while the
+        # others idle, and that solo tail lands inside the measured window and
+        # understates aggregate throughput -- worst when there are few rounds.
+        # Gathering per round keeps every measured window genuinely concurrent.
+        for round_index in range(requests_per_client):
+            results = await asyncio.gather(
+                *(one(i, round_index, clients[i]) for i in range(slots))
+            )
+            if round_index == 0:
+                continue  # warm-up round, measured by nobody
+            collected.extend(sample for sample, _, _ in results)
+            round_spans.append(
+                (
+                    min(started for _, started, _ in results),
+                    max(finished for _, _, finished in results),
+                )
+            )
     finally:
         await asyncio.gather(*(c.aclose() for c in clients), return_exceptions=True)
 
-    if not spans:
+    if not round_spans:
         raise RuntimeError("no measured requests completed")
-    # Wall time of the measured window: earliest measured start to latest
-    # measured end. Warm-up requests are excluded from both ends, so the window
-    # covers only the period when every slot was already loaded.
-    measured_wall_s = max(end for _, end in spans) - min(start for start, _ in spans)
+    # Sum the per-round concurrent windows, so the gaps between rounds are not
+    # counted as time the server spent generating.
+    measured_wall_s = sum(end - start for start, end in round_spans)
     return summarize(collected, measured_wall_s, slots, ctx_per_slot)
 
 
@@ -1434,7 +1501,7 @@ if __name__ == "__main__":
 - [ ] **Step 9: Run the whole suite to verify it passes**
 
 Run: `uv run pytest -v` from `bench/`
-Expected: PASS, 36 passed (11 in `test_cost.py`, 10 in `test_prices.py`, 8 in `test_metrics.py`, 7 in `test_load.py`).
+Expected: PASS, 38 passed (11 in `test_cost.py`, 10 in `test_prices.py`, 10 in `test_metrics.py`, 7 in `test_load.py`).
 
 Then confirm against the live server that `--prompt-tokens 1000` now sends close to 1000
 tokens, since that is the claim the writeup makes:
