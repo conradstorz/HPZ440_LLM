@@ -1,18 +1,32 @@
 # Cost Model: When Does the HPZ440 Beat a Hosted Model?
 
 Measured 2026-10-05 on the RTX 3060 12GB with Qwen2.5-7B-Instruct Q4_K_M.
-Source data: `benchmarks/stress-20261005-091820.json`. Regenerate with
-`uv --directory bench run python -m bench.report --sweep <file>` — pass an **absolute** path
-to `<file>`: `--directory bench` moves the process's working directory into `bench/`, so a
-path like `benchmarks/stress-<stamp>.json` typed relative to the repo root resolves to
-`bench/benchmarks/...` and fails with `FileNotFoundError`.
+Source data: `benchmarks/stress-20261005-091820.json`. Regenerate the throughput and break-even
+tables with `uv --directory bench run python -m bench.report --sweep <file>` — pass an
+**absolute** path to `<file>`: `--directory bench` moves the process's working directory into
+`bench/`, so a path like `benchmarks/stress-<stamp>.json` typed relative to the repo root
+resolves to `bench/benchmarks/...` and fails with `FileNotFoundError`. That command does not
+regenerate the "Hardware comparison" table below: `bench/bench/report.py` loads but discards
+the hardware rows from `bench/prices.json` and emits only the throughput and break-even
+tables, so the hardware table is hand-maintained from `bench/prices.json` and will not
+automatically stay in sync with it.
+
+The raw sweep file above is local to the machine that ran it — `benchmarks/` is gitignored by
+design, since it holds generated artifacts, so nobody else can re-open that exact JSON. The
+sweep's configuration is fully recoverable from committed text, though: an equivalent file
+comes from `pwsh -NoProfile -File scripts/stress-test.ps1` with its defaults (4 slot counts —
+1, 2, 4, 8 — at 2048 context tokens per slot, 1000-token prompts, 300 max output tokens, 5
+requests per client).
 
 ## The question
 
-"Tokens per dollar of hardware" is unbounded for a box you already own — run it longer and
-the figure improves without limit. The decision-relevant form is the break-even volume: the
-monthly token volume at which paying a hosted provider costs the same as amortized hardware
-plus electricity.
+The owner's question has two valid readings. **Throughput per dollar of capex** — tokens per
+second bought per dollar spent on the card — is bounded and well-posed; it is answered below
+under "Hardware comparison". **Total tokens per dollar over the hardware's life** is the other
+reading, and it is unbounded for a box you already own — run it longer and the figure improves
+without limit. That is why the rest of this document uses the decision-relevant substitute: the
+break-even volume, the monthly token volume at which paying a hosted provider costs the same as
+amortized hardware plus electricity.
 
 ## Assumptions
 
@@ -29,7 +43,7 @@ plus electricity.
 
 ## Throughput
 
-| Slots | Ctx/slot | Prompt tok | Aggregate tok/s | Per-client tok/s | Prefill tok/s | TTFT p50 | TTFT p95 | GPU W mean | VRAM MB |
+| Slots | Ctx/slot | Prompt tok | Aggregate tok/s | Per-client tok/s | Prefill tok/s (per request) | TTFT p50 | TTFT p95 | GPU W mean | VRAM MB |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 2048 | 1000 | 58.7 | 58.7 | 2223 | 519 ms | 524 ms | 168.07 | 4565.0 |
 | 2 | 2048 | 1002 | 99.0 | 49.5 | 1124 | 1018 ms | 1024 ms | 166.25 | 4673.0 |
@@ -50,7 +64,11 @@ then. Aggregate output rose 58.7 -> 145.7 tok/s (2.48x) from 1 to 8 slots, but t
 got more than 2.48x busier — the 4 -> 8 step bought only +14.5% more aggregate throughput for
 +104% worse TTFT p95 (2031 ms -> 4144 ms) and a +75% increase in per-request latency (9.4 s ->
 16.4 s median). Most of the usable gain is already in by 4 slots (127.3 tok/s, 2.17x), and
-every slot added after that trades latency for a shrinking throughput return. For a
+every slot added after that trades latency for a shrinking throughput return. Raising
+`LLM_PARALLEL` in production requires raising `LLM_CONTEXT_SIZE` by the same factor:
+`compose.yaml` wires `JARVIS_CONTEXT_TOKENS=${LLM_CONTEXT_SIZE:-4096}`, and `LLM_CONTEXT_SIZE`
+is both the total KV budget divided across slots and the figure Jarvis sizes its prompt budget
+from — raise `LLM_PARALLEL` alone and Jarvis will build prompts larger than a slot can hold. For a
 latency-sensitive workload like Jarvis triage (target: one message classified in under 10 s,
 `docs/models.md`), 4 slots is already at that latency budget's edge (TTFT p95 2.0 s, request
 latency p50 9.4 s); 8 slots exceeds it for the median request. Prefill also degraded as slots
@@ -82,8 +100,8 @@ The headline, stated plainly: at Jarvis's actual load — roughly a couple of hu
 month, call it 200 requests — the box does not win on price, by a wide margin. 200 requests at
 the 1000/300 mix is 0.26 mixed Mtok/month, against a break-even of 60.0 Mmix/month for
 Together AI at the 30 active-hours-a-month row. Among the rows this table models, 30 h/month is
-the **most favorable to owning the box**: idle watts dominate the monthly cost at low activity
-(load watts, 168.07, exceed idle watts, 13.66 — `bench/bench/cost.py`), and 30 h/month is the
+the **most favorable to owning the box**: load watts exceed idle watts (168.07 vs. 13.66 —
+`bench/bench/cost.py`), so monthly cost rises with active hours, and 30 h/month is the
 lowest activity level this table models. At that row, the box would need to run roughly
 **230x** its actual Jarvis volume before owning it beats renting from Together.
 
@@ -103,23 +121,23 @@ row, break-even is 438.5 Mmix/month, roughly **1,690x** actual load. Owning this
 cheaper way to run triage at this household's volume under either hosted comparison. The reasons
 the box exists anyway are not dollar reasons — see "What this does not say" below.
 
-## What this does not say
+The break-even figure is more legible per day than per month, and one sanity check makes the
+table honest about which of its rows are physically coherent. Together AI's 30 h/month
+break-even, 46,123 requests/month, is about **1,537 requests/day**. Producing that many output
+tokens needs 46,123 x 300 ≈ 13.8M output tokens a month, which at the 8-slot aggregate measured
+above (145.7 tok/s) takes about **26 hours** of generation — so the 30 active-hours row is
+roughly the self-consistent point of this model: a box that actually ran at Together's 30 h
+break-even volume would need to spend close to 30 hours a month generating.
 
-- **GPU-only watts.** `nvidia-smi` reports the card, not the HP Z440 around it. Whole-box
-  draw is materially higher, so the owning cost above is a **lower bound** and the real
-  break-even volume is **higher** than the table says. A wall meter would close this.
-- **The baseline is not a cold-idle GPU.** It is measured with the model resident in VRAM,
-  because that is how the box runs. A card with no model loaded would draw less.
-- **Quality is not matched to frontier models.** Every hosted row is a Llama-3.1-8B-class
-  instruct model — the same tier as what runs here. Frontier APIs are excluded on purpose:
-  quoting their $/Mtok beside a 7B's throughput would be a comparison of two different things.
-- **Local-hardware rows are published figures, not measured here.** Only the RTX 3060 row in
-  `bench/prices.json` has `measured_here: true`.
-- **Hosted prices move.** Every price in `bench/prices.json` carries the URL it came from and
-  the date it was read. Re-read them before relying on this.
-- **Non-price reasons are not modelled.** Mail staying on the LAN, no per-token metering, and
-  no dependency on someone else's uptime are the reasons this box exists. They do not appear
-  in a dollar figure.
+The 720 h/month row is also physically reachable, just not in a way relevant to Jarvis: running
+flat out, the box could produce roughly 145.7 tok/s x 720 h of decode, which works out to about
+**1,636 mixed Mtok/month** of capacity — above DeepInfra's 720 h break-even of 1,174.3 Mmix, so
+at full saturation the box would in fact win against DeepInfra on price. That comparison is
+irrelevant here: Jarvis's real load is 0.26 Mmix/month, four orders of magnitude below that
+saturation capacity. The four `hours_active` rows in the table above are a sensitivity axis over
+an assumption, not four scenarios Jarvis might land in — only the 30 h row sits anywhere near a
+volume this model would actually produce, and even that is ~230x above Jarvis's real ~0.26
+Mmix/month.
 
 ## Hardware comparison
 
@@ -150,3 +168,21 @@ Two systems a reader might expect here could not be sourced and are deliberately
 M4** is discontinued from Apple's own storefront, with third-party listings spanning
 $449-$1099 and no defensible single figure. Their absence is a sourcing gap, not a finding
 that they are worse or better.
+
+## What this does not say
+
+- **GPU-only watts.** `nvidia-smi` reports the card, not the HP Z440 around it. Whole-box
+  draw is materially higher, so the owning cost above is a **lower bound** and the real
+  break-even volume is **higher** than the table says. A wall meter would close this.
+- **The baseline is not a cold-idle GPU.** It is measured with the model resident in VRAM,
+  because that is how the box runs. A card with no model loaded would draw less.
+- **Quality is not matched to frontier models.** Every hosted row is a Llama-3.1-8B-class
+  instruct model — the same tier as what runs here. Frontier APIs are excluded on purpose:
+  quoting their $/Mtok beside a 7B's throughput would be a comparison of two different things.
+- **Local-hardware rows are published figures, not measured here.** Only the RTX 3060 row in
+  `bench/prices.json` has `measured_here: true`.
+- **Hosted prices move.** Every price in `bench/prices.json` carries the URL it came from and
+  the date it was read. Re-read them before relying on this.
+- **Non-price reasons are not modelled.** Mail staying on the LAN, no per-token metering, and
+  no dependency on someone else's uptime are the reasons this box exists. They do not appear
+  in a dollar figure.

@@ -75,7 +75,7 @@ def break_even_rows(
 
 def _throughput_table(sweep: dict) -> str:
     lines = [
-        "| Slots | Ctx/slot | Prompt tok | Aggregate tok/s | Per-client tok/s | Prefill tok/s | TTFT p50 | TTFT p95 | GPU W mean | VRAM MB |",
+        "| Slots | Ctx/slot | Prompt tok | Aggregate tok/s | Per-client tok/s | Prefill tok/s (per request) | TTFT p50 | TTFT p95 | GPU W mean | VRAM MB |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for p in throughput_rows(sweep):

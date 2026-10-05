@@ -66,8 +66,11 @@ New:
 
 ```
 bench/pyproject.toml            uv project, deps: httpx
-bench/stress.py                 async load generator, sweep driver, JSON writer
-bench/cost.py                   break-even model over a measured run + a prices file
+bench/bench/load.py             async load generator, sweep driver, JSON writer
+bench/bench/metrics.py          per-round metric computation (TTFT, throughput, cache checks)
+bench/bench/report.py           Markdown tables from a sweep file + prices
+bench/bench/cost.py             break-even model over a measured run
+bench/bench/prices.py           prices.json loader
 bench/prices.json               hosted and hardware prices, each with source URL and date
 bench/tests/test_cost.py        cost arithmetic against hand-computed fixtures
 scripts/stress-test.ps1         wrapper: .env parse, restart per sweep point, uv run, restore
@@ -203,8 +206,9 @@ latency long before it wins on price; the spec does not assume that, it reports 
 - `tests/assert-script-contracts.ps1` gains assertions that the wrapper restores `.env` in a
   `finally` block and targets `hpz440`, not `localhost`.
 
-The sweep itself is not tested by CI — it needs the GPU. It is an operator-run command whose
-output is a committed artifact.
+The sweep itself is not tested by CI — it needs the GPU. It is an operator-run command. **As
+built:** the raw sweep JSON stays local and is never committed (`benchmarks/` is gitignored);
+only the derived Markdown tables in `docs/cost-model.md` are committed.
 
 ## Failure handling
 
@@ -212,7 +216,7 @@ output is a committed artifact.
 | --- | --- |
 | `llm-api` does not come healthy after a restart | Abort the sweep, restore `.env`, report which slot count failed. Partial results already collected are still written. |
 | Out of VRAM at a high slot count | Caught as a container start failure; the run records that slot count as `oom` and continues to the restore step rather than retrying. |
-| A single request errors mid-stream | The round is discarded and retried once; a second failure fails that slot count, not the sweep. |
+| A single request errors mid-stream | **As built:** no retry. The exception propagates out of `asyncio.gather` in `bench/bench/load.py`, the process exits non-zero, and `scripts/stress-test.ps1` records that slot count's status as `error` and continues to the next slot count rather than retrying. |
 | Ctrl+C | `finally` restores `.env` and restarts `llm-api` at the production settings. |
 | `nvidia-smi` container unavailable | The sweep continues with null watts and `docs/cost-model.md` cannot be generated; throughput results are still valid and written. |
 
