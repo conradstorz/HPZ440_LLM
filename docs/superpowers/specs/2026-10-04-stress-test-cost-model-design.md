@@ -126,11 +126,18 @@ Per sweep point, written to `benchmarks/stress-<stamp>.json`:
 | `latency_ms_p50`, `latency_ms_p95` | request start to final chunk |
 | `gpu_watts_idle`, `gpu_watts_mean`, `gpu_watts_max` | from the telemetry sampler |
 | `vram_mb_max` | peak `memory.used` |
-| `cached_tokens_total` | from `usage.prompt_tokens_details`; above 1% of total prompt tokens the prefill figure is flagged invalid |
+| `cached_tokens_total` | from `usage.prompt_tokens_details`; above 25% of total prompt tokens the prefill figure is flagged invalid |
 
 `cached_tokens_total` is a self-check, not a result: if distinct prompts still share a
 prefix, the run sets `prefill_valid: false` rather than quietly reporting an inflated prefill
 rate.
+
+The 25% threshold is calibrated against the live server rather than chosen a priori. Measured
+2026-10-05 at 1000-token prompts: distinct prompts cache 3-4% in isolation and up to ~13%
+across consecutive requests in one slot, because the chat template and llama.cpp's cache block
+granularity are a floor no prompt design removes; three identical prompts cache 68%. The
+original 1% figure in this spec sat below the noise floor and would have failed every honest
+run.
 
 ## Cost model
 

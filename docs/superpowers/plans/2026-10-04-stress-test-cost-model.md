@@ -873,6 +873,16 @@ def test_summarize_flags_cache_contamination():
     assert out["cached_tokens_total"] == 2000
 
 
+def test_summarize_tolerates_the_measured_cache_floor():
+    """The chat template and llama.cpp block granularity cache ~13% at worst.
+
+    Measured live on 2026-10-05 at 1000-token prompts. A threshold below this would
+    mark every honest run invalid, which is the bug this test pins down.
+    """
+    floor = [_sample(cached_tokens=130) for _ in range(4)]  # 520 of 4000 = 13%
+    assert summarize(floor, wall_seconds=10.0, slots=2, ctx_per_slot=2048)["prefill_valid"] is True
+
+
 def test_summarize_percentile_fields_present():
     samples = [_sample(ttft_ms=float(i), latency_ms=float(i * 10)) for i in (1, 2, 3, 4)]
     out = summarize(samples, wall_seconds=10.0, slots=1, ctx_per_slot=2048)
@@ -904,7 +914,15 @@ from dataclasses import dataclass
 
 # Above this share of prompt tokens served from llama.cpp's prefix cache, the
 # measured prefill rate is not a measurement of prefill.
-CACHE_CONTAMINATION_LIMIT = 0.01
+#
+# 0.25 is calibrated, not guessed. Measured against the live server at 1000-token
+# prompts on 2026-10-05: distinct prompts sit at 3-4% in isolation and reach ~13%
+# across consecutive requests in one slot, because the chat template and llama.cpp's
+# cache block granularity are an irreducible floor that no prompt design removes.
+# Three identical prompts measured 68%. A 1% limit would therefore flag every honest
+# run, while 0.25 clears the floor with headroom and still catches real prefix
+# sharing by a factor of nearly three.
+CACHE_CONTAMINATION_LIMIT = 0.25
 
 
 @dataclass(frozen=True)
@@ -975,7 +993,7 @@ def summarize(
 - [ ] **Step 4: Run it to verify it passes**
 
 Run: `uv run pytest tests/test_metrics.py -v` from `bench/`
-Expected: PASS, 7 passed.
+Expected: PASS, 8 passed.
 
 - [ ] **Step 5: Write the failing load test**
 
@@ -1344,7 +1362,7 @@ if __name__ == "__main__":
 - [ ] **Step 9: Run the whole suite to verify it passes**
 
 Run: `uv run pytest -v` from `bench/`
-Expected: PASS, 27 passed (11 in `test_cost.py`, 5 in `test_prices.py`, 7 in `test_metrics.py`, 4 in `test_load.py`).
+Expected: PASS, 33 passed (11 in `test_cost.py`, 10 in `test_prices.py`, 8 in `test_metrics.py`, 4 in `test_load.py`).
 
 If `test_one_request_measures_ttft_and_usage` fails on `ttft_ms`, the stub's chunked framing is at fault, not `load.py` — check that each SSE event is written as its own HTTP chunk and flushed.
 
@@ -1978,6 +1996,13 @@ plus electricity.
 Percentiles are over `slots x 4` measured requests (5 per client, the first discarded as
 warm-up). At 1 slot that is 4 samples, so read the 1-slot p95 as the slowest of four requests,
 not as a tail latency.
+
+Every row's prefill figure carries a cache check: each client sends a distinct prompt, and the
+run records what share of prompt tokens llama.cpp served from its prefix cache instead of
+computing. Measured on this server, distinct prompts leave a 3-13% irreducible floor -- the
+chat template plus the cache's block granularity -- while identical prompts reach 68%. So a row
+reporting `prefill_valid: false` means the prompts really did share a prefix and that row's
+prefill number should be ignored. Say for each row whether the check passed.
 
 <One paragraph: did throughput scale with slots, and where did it stop scaling? If the 8-slot
 point OOMed or regressed, say so and give the number.>
