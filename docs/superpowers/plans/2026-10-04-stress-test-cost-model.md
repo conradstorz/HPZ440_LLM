@@ -1106,6 +1106,19 @@ def test_build_prompt_is_deterministic():
     assert load.build_prompt(7, 1000) == load.build_prompt(7, 1000)
 
 
+def test_build_prompt_of_different_sizes_shares_no_long_run():
+    """A size change must not produce a prefix-extension of the smaller prompt.
+
+    Seeding on the seed alone did exactly that, so re-running a sweep at a new
+    --prompt-tokens value on a server that had not restarted was served 62.3% from
+    the previous run's cache, rising to 99.9% on a repeat.
+    """
+    short = load.build_prompt(7, 600)
+    long = load.build_prompt(7, 1000)
+    assert not _shares_long_run(short, long)
+    assert not long.startswith(short[:400])
+
+
 def test_build_prompt_is_roughly_the_requested_length():
     prompt = load.build_prompt(0, 1000)
     # Sized by the measured 6.55 chars/token, so 1000 tokens is ~6550 characters.
@@ -1262,7 +1275,11 @@ def build_prompt(seed: int, approx_tokens: int) -> str:
 
     Deterministic in the seed, so a rerun of the same sweep point is comparable.
     """
-    rng = random.Random(seed)
+    # Both parameters seed the generator. Seeding on `seed` alone makes a longer
+    # prompt a literal prefix-extension of a shorter one at the same seed, so a run
+    # at a new --prompt-tokens value is served from the previous run's cache on a
+    # server that has not restarted: measured 62.3% cached, then 99.9% on a repeat.
+    rng = random.Random((seed, approx_tokens))
     target_chars = int(approx_tokens * _CHARS_PER_TOKEN)
     parts = [f"Note {rng.randrange(10 ** 9)}. Summarize these notes."]
     size = len(parts[0])
@@ -1415,7 +1432,7 @@ if __name__ == "__main__":
 - [ ] **Step 9: Run the whole suite to verify it passes**
 
 Run: `uv run pytest -v` from `bench/`
-Expected: PASS, 35 passed (11 in `test_cost.py`, 10 in `test_prices.py`, 8 in `test_metrics.py`, 6 in `test_load.py`).
+Expected: PASS, 36 passed (11 in `test_cost.py`, 10 in `test_prices.py`, 8 in `test_metrics.py`, 7 in `test_load.py`).
 
 Then confirm against the live server that `--prompt-tokens 1000` now sends close to 1000
 tokens, since that is the claim the writeup makes:
@@ -1424,8 +1441,19 @@ tokens, since that is the claim the writeup makes:
 uv run python -m bench.load --base-url http://hpz440:8080 --model /models/Qwen2.5-7B-Instruct-Q4_K_M.gguf --slots 2 --ctx-per-slot 2048 --requests-per-client 3 --prompt-tokens 1000 --max-tokens 60
 ```
 
+Restart `llm-api` first so the check starts from a cold cache, the way each sweep point
+does:
+
+```
+docker --context hpz440 compose --env-file .env restart llm-api
+```
+
 Expected: `prompt_tokens_mean` within about 5% of 1000, `prefill_valid: true`, and
 `cached_tokens_total` a low single-digit percentage of `prompt_tokens_total`.
+
+A warm server can legitimately report a high cached share when an earlier run happened to
+send overlapping prompts; that is why each sweep point in Task 5 restarts the container
+before measuring, and why this check does too.
 
 If `test_one_request_measures_ttft_and_usage` fails on `ttft_ms`, the stub's chunked framing is at fault, not `load.py` — check that each SSE event is written as its own HTTP chunk and flushed.
 

@@ -93,6 +93,8 @@ For each `N` in `1, 2, 4, 8`:
    at context 2048, not the production 8192 — its decode rate is comparable to the other
    sweep points but not directly to the `docs/models.md` rows.
 2. `docker --context hpz440 compose up -d llm-api`, then poll `/v1/models` until it answers.
+   The restart also clears llama.cpp's prompt cache, so every sweep point measures prefill
+   from cold rather than inheriting the previous point's cached prompts.
 3. Sample GPU telemetry at 1 Hz in a throwaway container for 20 s with no load — the **idle
    baseline**.
 4. Fire `N` concurrent streaming clients. Each client issues **5 sequential requests**, each
