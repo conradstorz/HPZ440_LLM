@@ -50,8 +50,12 @@ $OriginalEnv = [System.IO.File]::ReadAllBytes($EnvPath)
 function Set-EnvKey {
     param([string]$Name, [string]$Value)
     $Lines = Get-Content $EnvPath
-    if ($Lines | Where-Object { $_ -match "^$Name=" }) {
-        $Lines = $Lines | ForEach-Object { if ($_ -match "^$Name=") { "$Name=$Value" } else { $_ } }
+    # Escape the key before using it as a regex. Both call sites pass literals, so
+    # this changes nothing today; it stops the function being a trap for the next
+    # key name that happens to contain a metacharacter.
+    $Pattern = "^$([regex]::Escape($Name))="
+    if ($Lines | Where-Object { $_ -match $Pattern }) {
+        $Lines = $Lines | ForEach-Object { if ($_ -match $Pattern) { "$Name=$Value" } else { $_ } }
     } else {
         $Lines += "$Name=$Value"
     }
@@ -83,7 +87,16 @@ function Stop-GpuSampler {
     param($Job)
     # Killing the container ends the piped process, which completes the job.
     docker --context $Context kill $SamplerName 2>$null | Out-Null
-    $Lines = Receive-Job -Job $Job -Wait -AutoRemoveJob 2>$null
+    # Bounded wait. If the kill does not take -- a daemon hiccup over the SSH
+    # context -- an unbounded Receive-Job -Wait would hang the whole sweep instead
+    # of degrading to null watts, and it would hang before the .env restore.
+    $null = Wait-Job -Job $Job -Timeout 30
+    if ($Job.State -eq 'Running') {
+        Write-Warning 'GPU sampler did not exit within 30 s; abandoning it and continuing with null watts.'
+        Stop-Job -Job $Job 2>$null | Out-Null
+    }
+    $Lines = Receive-Job -Job $Job 2>$null
+    Remove-Job -Job $Job -Force 2>$null | Out-Null
     $Watts = @(); $Vram = @()
     foreach ($Line in $Lines) {
         $Parts = ($Line -split ',') | ForEach-Object { $_.Trim() }
@@ -186,24 +199,37 @@ try {
 finally {
     Write-Host ""
     Write-Host 'Restoring .env and restarting llm-api at production settings...'
+    # The restore goes first and alone. Nothing may run ahead of it that could
+    # throw: LLM_CONTEXT_SIZE left raised silently changes the Jarvis agent's
+    # token budget on a server the operator relies on.
     [System.IO.File]::WriteAllBytes($EnvPath, $OriginalEnv)
     docker --context $Context rm -f $SamplerName 2>$null | Out-Null
     docker --context $Context compose --env-file .env up -d llm-api
     if ($LASTEXITCODE -ne 0) { Write-Warning 'llm-api did not restart cleanly. Run scripts/start.ps1.' }
+
+    # Write whatever was measured from inside the finally, so an exception
+    # escaping the sweep loop cannot discard points already collected. Each point
+    # costs a container restart and minutes of exclusive GPU time, so losing a
+    # whole sweep to a transient I/O error is the expensive kind of silent
+    # failure. Guarded in turn, so failing to save results can never mask the
+    # restore above.
+    try {
+        @{
+            started        = $Stamp
+            model          = $Model
+            ctx_per_slot   = $CtxPerSlot
+            prompt_tokens  = $PromptTokens
+            max_tokens     = $MaxTokens
+            capex_usd      = 300.0
+            price_per_kwh  = 0.17
+            gpu_watts_idle = $(if ($IdleStats) { $IdleStats.mean } else { $null })
+            points         = $Points
+        } | ConvertTo-Json -Depth 12 | Set-Content -Path $OutputPath
+        Write-Host "Sweep written to $OutputPath ($($Points.Count) point(s))"
+        Write-Host "Next: uv --directory bench run python -m bench.report --sweep $OutputPath"
+    } catch {
+        Write-Warning "Could not write $OutputPath : $_"
+    }
+
     Pop-Location
 }
-
-@{
-    started       = $Stamp
-    model         = $Model
-    ctx_per_slot  = $CtxPerSlot
-    prompt_tokens = $PromptTokens
-    max_tokens    = $MaxTokens
-    capex_usd     = 300.0
-    price_per_kwh = 0.17
-    gpu_watts_idle = $(if ($IdleStats) { $IdleStats.mean } else { $null })
-    points        = $Points
-} | ConvertTo-Json -Depth 12 | Set-Content -Path $OutputPath
-
-Write-Host "Sweep written to $OutputPath"
-Write-Host "Next: uv --directory bench run python -m bench.report --sweep $OutputPath"
