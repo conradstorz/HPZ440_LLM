@@ -102,6 +102,14 @@ def test_rejects_impossible_retrieved_date(tmp_path):
         prices.load_prices(_write(tmp_path, payload))
 
 
+def test_rejects_undashed_retrieved_date(tmp_path):
+    """A real date in the wrong shape. date.fromisoformat alone accepts this."""
+    payload = json.loads(json.dumps(GOOD))
+    payload["hosted"][0]["retrieved"] = "20261004"
+    with pytest.raises(ValueError, match="retrieved"):
+        prices.load_prices(_write(tmp_path, payload))
+
+
 def test_shipped_prices_file_is_valid():
     """The committed prices.json must itself satisfy the provenance rule."""
     path = Path(prices.__file__).resolve().parent / "prices.json"

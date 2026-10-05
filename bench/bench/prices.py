@@ -8,9 +8,12 @@ recalled from memory cannot reach the writeup.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 @dataclass(frozen=True)
@@ -45,12 +48,15 @@ def _require(record: dict, field: str, label: str) -> str:
 
 def _check_retrieved(record: dict, label: str) -> str:
     retrieved = str(record.get("retrieved", "") or "").strip()
+    # Two checks, because neither alone is enough: fromisoformat accepts "20261004",
+    # and the regex alone accepts a well-shaped impossible day like 2026-02-30.
+    if not _DATE.match(retrieved):
+        raise ValueError(f"{label}: retrieved must be YYYY-MM-DD, got {retrieved!r}")
     try:
-        # Rejects both the wrong shape and a well-shaped impossible date like 2026-02-30.
         date.fromisoformat(retrieved)
     except ValueError:
         raise ValueError(
-            f"{label}: retrieved must be a real YYYY-MM-DD date, got {retrieved!r}"
+            f"{label}: retrieved must be a real calendar date, got {retrieved!r}"
         ) from None
     return retrieved
 
