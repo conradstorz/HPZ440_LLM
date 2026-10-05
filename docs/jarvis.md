@@ -163,6 +163,41 @@ Problems found and fixed during the run, in order: Google's per-minute quota cut
 
 Classification quality has not yet been judged: no corrections have been submitted. Review the briefing and correct a few cards; the correction rate over the coming weeks is the Phase 2 quality gate.
 
+## Production batch, 2026-10-05
+
+Three consecutive runs against unpolled mail (last prior run 2026-09-30), cap 20 per run, production
+config: one llama.cpp slot, `LLM_CONTEXT_SIZE` 8192. GPU sampled at 1 Hz throughout. 60 messages, no
+synthetic load and no replay — this is the real pipeline on the current build.
+
+| Measure | Value |
+| --- | --- |
+| Messages captured, classified, drafted | 60 / 60 / 60 |
+| First-pass errors | **0** (0 `error` events, 0 `skipped`, 0 `policy_reject`) |
+| Capture to draft, first attempt | p50 3.03 s, p90 4.18 s, p95 4.87 s, p99 5.35 s, max 5.74 s (target: under 10 s) |
+| Classify stage alone | p50 2.63 s, p90 3.48 s, max 4.13 s |
+| Draft stage alone | 0 s for 46 of 60; p90 1.57 s, max 2.32 s for the 14 that drafted |
+| Groups | fyi 26, likely_noise 22, needs_decision 10, reply_suggested 2 |
+| Drafts with reply text / proposed actions | 11 / none 53, label 5, archive 2 |
+| GPU power | 13.7 W idle with the model resident, 142.2 W mean under load, 170.9 W peak |
+| GPU utilisation under load | 84% mean |
+| VRAM | 4,909 MB peak of 12,288 MB |
+| Wall clock per run | 66-73 s for 20 messages, about 3.5 s each including the Gmail fetch |
+
+Two things this settles. **Latency is not a constraint**: the worst message in 60 finished at 5.74 s
+against a 10 s target, and the distribution is tight — p50 to max spans 2.7 s. **The 6.1 % first-pass
+classification failure rate recorded on 2026-09-30 was an artefact of that day's bring-up**, not a
+property of the build: the three fixes it provoked (`d358027`, `16fe9be`, `a2e3a41`) landed 16:47-17:09 UTC,
+the two runs after them had zero errors, and this batch adds 60 more consecutive clean messages. 60 of 60
+bounds the current rate below roughly 5 % at 95 % confidence; it does not prove zero.
+
+Per message the pipeline makes one classify call and, for 14 of 60, one draft call. `likely_noise` never
+drafts and `needs_decision` always does. So the LLM cost of triage is close to one structured completion
+per message, which is why a 20-message run takes about a minute and why concurrency has little to offer
+at this volume — the box was idle between runs, not saturated.
+
+All three runs returned `capped: true`, so mail is still waiting; `_next_since` holds `since` at
+2026-09-30T16:52Z until a run completes uncapped.
+
 ## Not in this phase
 
 Sending or modifying mail, cloud models, scheduled polling, calendar sources, auth on the briefing or the chat endpoint, NAS storage. See `roadmap.md`. Phase 1.5 added chat, teaching notes, and read-only workstation documents; the rest of this list is unchanged.
