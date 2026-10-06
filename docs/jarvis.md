@@ -216,6 +216,10 @@ Two changes:
   updates 92, forums 13, primary 12, social 1. **The cap and the query are one lever** — widening the
   query without raising the cap reintroduces the loss, which is why `.env.example` now says so beside
   both.
+
+  The headroom is real rather than assumed: `category:primary` runs 12.4/day over the last 7 days and
+  9.7/day over 30, and the busiest single day in the last 14 was **15**, against a cap of 50. A
+  weekday spike would have to more than triple to re-enter the failure.
 - `GmailSource.poll` builds `after:` from one day *before* `since`. Gmail filters by date in the
   account's timezone while `since` is a UTC instant, so flooring it to a UTC date could land a day late
   and cut inside the requested window — just after midnight, `after:<today>` dropped all of yesterday
@@ -225,6 +229,13 @@ Two changes:
 
 The ~845 skipped messages are not recoverable through this query. Most were `promotions` or `updates`
 and out of scope under the new one; nothing was deleted, and they remain in Gmail.
+
+**Every classification figure recorded above this line is drawn from the whole inbox, and is not
+comparable to anything measured after 2026-10-06.** `category:primary` is a different population:
+the 2026-10-05 batch was 22 of 60 `likely_noise`, which is largely what Gmail already files under
+promotions and updates. Expect the group mix to shift hard toward `needs_decision` and `fyi`, and do
+not read that as a model change. The Phase 2 quality gate — the correction rate — needs a fresh
+baseline taken under the new query; the pre-2026-10-06 numbers cannot serve as one.
 
 ## Not in this phase
 
