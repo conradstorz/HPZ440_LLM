@@ -77,6 +77,12 @@ def _next_since(last: JournalEvent | None, now: datetime, settings: Settings) ->
     A run that hit the per-run cap or died mid-poll did not finish listing its window, so the watermark must not
     advance: GmailSource turns ``since`` into ``after:YYYY/MM/DD``, and advancing it would strand the backlog the
     capped run deliberately left behind.
+
+    Holding the watermark only preserves a backlog the *watermark* bounds. A ``gmail_query`` carrying its own time
+    filter (``newer_than:1d``) bounds the window independently and more tightly, so ``after:`` never binds and a
+    held watermark preserves nothing: whatever a capped run left behind ages out of the query window and is lost
+    for good. The cap must therefore exceed the query's daily volume -- see ``docs/jarvis.md``, which records what
+    happened when it did not.
     """
     if last is None:
         return now - timedelta(days=settings.initial_lookback_days)

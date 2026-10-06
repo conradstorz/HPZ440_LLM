@@ -195,8 +195,36 @@ drafts and `needs_decision` always does. So the LLM cost of triage is close to o
 per message, which is why a 20-message run takes about a minute and why concurrency has little to offer
 at this volume — the box was idle between runs, not saturated.
 
-All three runs returned `capped: true`, so mail is still waiting; `_next_since` holds `since` at
-2026-09-30T16:52Z until a run completes uncapped.
+### The cap was silently losing mail
+
+All three runs returned `capped: true`. Investigating that on 2026-10-06 found a real defect, not a
+queue that would drain on its own.
+
+`JARVIS_GMAIL_QUERY` was `in:inbox newer_than:1d` and the cap was 20. The inbox takes **~171
+messages/day** (1,160 over 7 days), so no run could ever finish its window: `capped` latched, and
+`_next_since` held the watermark to preserve a backlog it had no power to preserve. The query's
+`newer_than:1d` is tighter than the `after:` the poller derives from `since`, so Gmail returned the
+same 171 ids either way — the watermark was inert. Mail a capped run left behind simply aged past
+`newer_than:1d` and became unreachable. 969 of the last 7 days' messages were unseen against 124 of
+the last 1 day, so roughly **845 messages were never triaged and cannot now be found by this query**.
+
+Two changes:
+
+- `JARVIS_GMAIL_QUERY` is now `in:inbox newer_than:1d category:primary` and the cap is back to its 50
+  default. One day of `category:primary` is ~12 messages against a cap of 50, so a run completes
+  uncapped and the window actually advances. One day by category, measured 2026-10-06: promotions 51,
+  updates 92, forums 13, primary 12, social 1. **The cap and the query are one lever** — widening the
+  query without raising the cap reintroduces the loss, which is why `.env.example` now says so beside
+  both.
+- `GmailSource.poll` builds `after:` from one day *before* `since`. Gmail filters by date in the
+  account's timezone while `since` is a UTC instant, so flooring it to a UTC date could land a day late
+  and cut inside the requested window — just after midnight, `after:<today>` dropped all of yesterday
+  evening. The clause is now only ever a lower bound; `query` is where a tighter window belongs, and
+  `Store.exists()` absorbs the overlap. Covered by
+  `test_poll_window_is_never_narrower_than_the_caller_asked_for`.
+
+The ~845 skipped messages are not recoverable through this query. Most were `promotions` or `updates`
+and out of scope under the new one; nothing was deleted, and they remain in Gmail.
 
 ## Not in this phase
 

@@ -61,7 +61,9 @@ services:
       - JARVIS_LLM_BASE_URL=http://llm-api:8080
       - JARVIS_LLM_MODEL=${LLM_MODEL_PATH:-/models/model.gguf}
       - JARVIS_GMAIL_ACCOUNT=${JARVIS_GMAIL_ACCOUNT:-}
-      - JARVIS_GMAIL_QUERY=${JARVIS_GMAIL_QUERY:-in:inbox}
+      # Bounded by default: `in:inbox` alone matches tens of thousands of messages, and a run capped at
+      # JARVIS_MAX_MESSAGES_PER_RUN would never reach the rest. See the note in .env.example.
+      - JARVIS_GMAIL_QUERY=${JARVIS_GMAIL_QUERY:-in:inbox newer_than:1d category:primary}
       - JARVIS_MAX_MESSAGES_PER_RUN=${JARVIS_MAX_MESSAGES_PER_RUN:-50}
       - JARVIS_WORKSPACE_AGENT_URL=${JARVIS_WORKSPACE_AGENT_URL:-}
       - JARVIS_MAX_DOCUMENT_BYTES=${JARVIS_MAX_DOCUMENT_BYTES:-5000000}

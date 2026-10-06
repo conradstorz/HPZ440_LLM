@@ -56,7 +56,7 @@ Assert-FileContains 'compose.yaml' '\$\{HOST_JARVIS_DATA_DIR:-/srv/llm/jarvis-da
 Assert-FileContains 'compose.yaml' 'JARVIS_LLM_BASE_URL=http://llm-api:8080'
 Assert-FileContains '.env.example' '^JARVIS_HOST_PORT=8090$'
 Assert-FileContains '.env.example' '^JARVIS_GMAIL_ACCOUNT='
-Assert-FileContains '.env.example' '^JARVIS_GMAIL_QUERY=in:inbox$'
+Assert-FileContains '.env.example' '^JARVIS_GMAIL_QUERY=in:inbox newer_than:1d category:primary$'
 Assert-FileContains '.env.example' '^JARVIS_MAX_MESSAGES_PER_RUN=50$'
 Assert-FileContains '.gitignore' '^token\.json$'
 Assert-FileContains '.gitignore' '^credentials\.json$'
