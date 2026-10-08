@@ -20,8 +20,9 @@ Origin is set per route: `/submit` is always `machine`, `/relay` is always `huma
 
 ## What runs where
 
-- Container `hpz440-llm-obiwan-1`, port 8070 published on the HPZ440's loopback only. From this workstation it is
-  `http://localhost:8070` through the SSH tunnel; the LAN reaches it only through Jarvis.
+- Container `hpz440-llm-obiwan-1` on an internal Compose network with no published port and no route to the
+  internet. Jarvis reaches it at `http://obiwan:8070`; operators use the `scripts/obiwan-*.ps1` wrappers, which
+  run the CLI inside the container.
 - `HOST_OBIWAN_DIR` (default `/srv/obiwan`) on the HPZ440:
   - `data/` → `/data`: `record.sqlite` (authoritative, append-only) and `index/fts.sqlite` (disposable projection).
   - `inbox/` → `/inbox`: drop files here. Recorded files move to `processed/<date>/`; failures to `failed/` with a
@@ -60,8 +61,11 @@ pwsh -NoProfile -File scripts/obiwan-status.ps1
   changed files become a new version of the same `file_id`, moved files keep their `file_id`.
 - **Reindex**: `scripts/obiwan-reindex.ps1` rebuilds the search projection from stored chunks without reading a
   source file.
+- **Anything else over HTTP.** `scripts/obiwan-call.ps1 -Path /search -Role reader` runs `obiwan call` inside
+  the container for routes without a dedicated script.
 
-HTTP, with `Authorization: Bearer <token>`:
+HTTP, with `Authorization: Bearer <token>`. These routes are reachable from Jarvis's container and from
+`obiwan call` (see above), never from outside the compose network:
 
 ```text
 GET  /search?q=&k=      reader     GET /document/{doc_id}   reader     GET /status   reader   GET /journal?limit=  reader
@@ -127,10 +131,12 @@ up. `<R>`, `<W>`, `<C>` are the three tokens from `.env`; prefer the scripts, wh
    reply cites a location such as `corpus:COMMAND-STRUCTURE.md`; `GET /document/{doc_id}` with `<R>` shows the chunk,
    its version and its sighting; the file at that path hashes to the document's `content_hash`.
 8. **Machine write.** Ask Jarvis to record a conclusion; it calls `record_note`. Search for it: `origin: machine`.
-   Then `curl -H "Authorization: Bearer <W>" -d '{"content":"x","origin":"human"}' http://localhost:8070/submit`
-   returns 400 and `GET /journal` shows the refusal with role `writer`.
+   Then `pwsh -NoProfile -File scripts/obiwan-call.ps1 -Role writer -Method POST -Path /submit -Body
+   '{"content":"x","origin":"human"}'` prints `HTTP 400: ...` to stderr, and `GET /journal` shows the refusal
+   with role `writer`.
 9. **Human write.** Tell Jarvis a fact; it calls `relay_fact` and reports a subject id. Search: `human/relayed`.
-   `curl -X POST -H "Authorization: Bearer <W>" -d '{"subject_id":"<id>"}' http://localhost:8070/confirm` returns 403.
+   `pwsh -NoProfile -File scripts/obiwan-call.ps1 -Role writer -Method POST -Path /confirm -Body
+   '{"subject_id":"<id>"}'` prints `HTTP 403: ...` to stderr.
    `scripts/obiwan-confirm.ps1 -SubjectId <id>` returns version 2 at `direct`; `/document` shows both rungs.
 10. **Rebuild.** `scripts/obiwan-reindex.ps1`. Expect `chunks_indexed` equal to `coverage.chunks`, and the same search
     results as before. `docker --context hpz440 compose logs obiwan` shows no read of any source path during it.

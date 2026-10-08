@@ -87,7 +87,8 @@ Assert-FileContains 'docs/cost-model.md' 'Break-even'
 Assert-FileContains 'docs/models.md' 'Concurrency'
 
 Assert-FileContains 'compose.yaml' '^  obiwan:$'
-Assert-FileContains 'compose.yaml' '127\.0\.0\.1:\$\{OBIWAN_HOST_PORT:-8070\}:8070'
+Assert-FileContains 'compose.yaml' '^  obiwan-net:$'
+Assert-FileContains 'compose.yaml' '^    internal: true$'
 Assert-FileContains 'compose.yaml' '\$\{HOST_OBIWAN_DIR:-/srv/obiwan\}/corpus:/sources/corpus:ro'
 Assert-FileContains 'compose.yaml' '\$\{HOST_OBIWAN_DIR:-/srv/obiwan\}/inbox:/inbox'
 Assert-FileContains 'compose.yaml' '\$\{HOST_OBIWAN_DIR:-/srv/obiwan\}/data:/data'
@@ -97,7 +98,6 @@ Assert-FileContains 'compose.yaml' 'JARVIS_OBIWAN_URL=http://obiwan:8070'
 Assert-FileContains 'compose.yaml' 'JARVIS_OBIWAN_READER_TOKEN=\$\{OBIWAN_READER_TOKEN:-\}'
 Assert-FileContains 'compose.yaml' 'JARVIS_OBIWAN_WRITER_TOKEN=\$\{OBIWAN_WRITER_TOKEN:-\}'
 Assert-FileContains '.env.example' '^HOST_OBIWAN_DIR=/srv/obiwan$'
-Assert-FileContains '.env.example' '^OBIWAN_HOST_PORT=8070$'
 Assert-FileContains '.env.example' '^OBIWAN_READER_TOKEN=change-me-reader$'
 Assert-FileContains '.env.example' '^OBIWAN_WRITER_TOKEN=change-me-writer$'
 Assert-FileContains '.env.example' '^OBIWAN_COMMANDER_TOKEN=change-me-commander$'
@@ -111,6 +111,9 @@ Assert-FileContains 'CLAUDE.md' 'obiwan'
 # D4 / S7: the Admiral never receives the commander credential.
 $ComposeLines = Get-Content (Join-Path $Root 'compose.yaml')
 if ($ComposeLines | Where-Object { $_ -match 'JARVIS_OBIWAN_COMMANDER' }) { throw 'compose.yaml must never hand the commander token to jarvis' }
+
+# S5: no published route for obiwan.
+if ($ComposeLines | Where-Object { $_ -match 'OBIWAN_HOST_PORT' }) { throw 'compose.yaml must not reference OBIWAN_HOST_PORT; obiwan has no published port' }
 
 $Gitkeep = Join-Path $Root 'models/.gitkeep'
 if (-not (Test-Path $Gitkeep)) { throw 'Missing models/.gitkeep placeholder' }

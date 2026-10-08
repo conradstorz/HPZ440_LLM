@@ -49,3 +49,13 @@ def test_a_refusal_is_reported_not_swallowed(monkeypatch, capsys):
     monkeypatch.setenv("OBIWAN_COMMANDER_TOKEN", "c")
     assert cli.main(["confirm", "abc"]) == 1
     assert "403" in capsys.readouterr().err
+
+
+def test_call_subcommand_uses_the_given_role_and_body(calls):
+    assert cli.main(["call", "POST", "/submit", "--role", "writer", "--json", '{"content": "x"}']) == 0
+    assert calls == [("POST", "/submit", "Bearer w", {"content": "x"})]
+
+
+def test_call_subcommand_with_no_json_sends_no_body(calls):
+    assert cli.main(["call", "GET", "/status"]) == 0
+    assert calls == [("GET", "/status", "Bearer r", None)]

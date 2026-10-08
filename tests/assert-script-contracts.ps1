@@ -98,4 +98,10 @@ Assert-FileContains 'scripts/obiwan-seed-corpus.ps1' 'HOST_OBIWAN_DIR'
 Assert-FileContains 'scripts/obiwan-seed-corpus.ps1' 'docker --context \$Context cp'
 Assert-FileNotContains 'scripts/obiwan-seed-corpus.ps1' 'exec -T obiwan'
 
+Assert-FileContains 'scripts/obiwan-call.ps1' 'Copy \.env\.example to \.env'
+Assert-FileContains 'scripts/obiwan-call.ps1' 'DOCKER_CONTEXT'
+Assert-FileContains 'scripts/obiwan-call.ps1' 'exec -T obiwan'
+Assert-FileContains 'scripts/obiwan-call.ps1' 'obiwan call'
+Assert-FileContains 'scripts/obiwan-call.ps1' 'param\(.*\$Path'
+
 Write-Host 'Script contract checks passed.'

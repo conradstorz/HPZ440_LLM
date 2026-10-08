@@ -41,6 +41,11 @@ def main(argv: list[str] | None = None) -> int:
     f = sub.add_parser("forget", help="Commander only: tombstone a subject")
     f.add_argument("subject_id")
     f.add_argument("--reason", required=True)
+    call_p = sub.add_parser("call", help="make one HTTP call with a role's credential (operators; replaces curl)")
+    call_p.add_argument("method")
+    call_p.add_argument("path")
+    call_p.add_argument("--role", choices=["reader", "writer", "commander"], default="reader")
+    call_p.add_argument("--json", dest="json_body", default=None)
     args = p.parse_args(argv)
     if args.cmd == "scan":
         return _call("POST", "/scan", token_var="OBIWAN_WRITER_TOKEN")
@@ -53,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "forget":
         return _call("POST", "/confirm", token_var="OBIWAN_COMMANDER_TOKEN",
                      body={"subject_id": args.subject_id, "action": "forget", "reason": args.reason})
+    if args.cmd == "call":
+        body = json.loads(args.json_body) if args.json_body is not None else None
+        return _call(args.method.upper(), args.path, token_var=f"OBIWAN_{args.role.upper()}_TOKEN", body=body)
     return 2
 
 

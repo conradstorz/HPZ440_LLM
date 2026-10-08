@@ -49,6 +49,7 @@ pwsh -NoProfile -File scripts/obiwan-scan.ps1
 pwsh -NoProfile -File scripts/obiwan-status.ps1
 pwsh -NoProfile -File scripts/obiwan-confirm.ps1 -SubjectId <id>           # Commander only
 pwsh -NoProfile -File scripts/obiwan-reindex.ps1
+pwsh -NoProfile -File scripts/obiwan-call.ps1 -Path /search -Role reader   # any other route, with the right credential
 ```
 
 ## Default URLs
@@ -56,7 +57,7 @@ pwsh -NoProfile -File scripts/obiwan-reindex.ps1
 - API: `http://localhost:8080/v1`
 - Open WebUI: `http://localhost:3000`
 - Jarvis briefing: `http://localhost:8090` (notes at `/notes`, chat API at `/v1/chat/completions`)
-- Obi-Wan: `http://localhost:8070` (loopback on the HPZ440; tunnel required, bearer token required)
+- Obi-Wan: no published URL; internal network only, reached through Jarvis or `scripts/obiwan-call.ps1`
 
 For LAN clients, replace `localhost` with the HPZ440 hostname or LAN IP.
 

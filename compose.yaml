@@ -57,6 +57,7 @@ services:
       - obiwan
     ports:
       - "${JARVIS_HOST_PORT:-8090}:8090"
+    networks: [default, obiwan-net]
     environment:
       - JARVIS_DATA_DIR=/data
       - JARVIS_LLM_BASE_URL=http://llm-api:8080
@@ -87,10 +88,9 @@ services:
   obiwan:
     build: ./obiwan
     restart: unless-stopped
-    # S5: no published route off the host. Loopback only; the workstation reaches it through the SSH tunnel,
-    # the LAN reaches it only through Jarvis.
-    ports:
-      - "127.0.0.1:${OBIWAN_HOST_PORT:-8070}:8070"
+    # S5: no egress and no published route. obiwan sits only on an internal network; Jarvis reaches it there,
+    # operators use docker compose exec.
+    networks: [obiwan-net]
     environment:
       - OBIWAN_DATA_DIR=/data
       - OBIWAN_INBOX_DIR=/inbox
@@ -113,3 +113,7 @@ services:
 
 volumes:
   open-webui-data:
+
+networks:
+  obiwan-net:
+    internal: true
