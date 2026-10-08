@@ -13,7 +13,10 @@ _WRITER = _READER | {"submit", "relay", "scan", "reindex"}
 _COMMANDER = _WRITER | {"confirm", "forget"}
 POWERS: dict[str, frozenset[str]] = {"reader": frozenset(_READER), "writer": frozenset(_WRITER), "commander": frozenset(_COMMANDER)}
 
-SCHEMA = """
+_ORIGIN_LIST = ", ".join(f"'{o}'" for o in ORIGINS)
+_ATTESTATION_LIST = ", ".join(f"'{a}'" for a in ATTESTATIONS)
+
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS files (
   file_id TEXT PRIMARY KEY, root TEXT NOT NULL, first_seen_at TEXT NOT NULL, duplicate_of TEXT
 );
@@ -25,8 +28,8 @@ CREATE INDEX IF NOT EXISTS sightings_by_path ON sightings(root, path, id);
 CREATE INDEX IF NOT EXISTS sightings_by_file ON sightings(file_id, id);
 CREATE TABLE IF NOT EXISTS documents (
   doc_id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, version_no INTEGER NOT NULL,
-  origin TEXT NOT NULL CHECK (origin IN ('source','human','machine')),
-  attestation TEXT CHECK (attestation IN ('relayed','direct')),
+  origin TEXT NOT NULL CHECK (origin IN ({_ORIGIN_LIST})),
+  attestation TEXT CHECK (attestation IN ({_ATTESTATION_LIST})),
   content_hash TEXT NOT NULL, size INTEGER, mtime TEXT, media_type TEXT NOT NULL, title TEXT,
   submitted_by TEXT, conversation_ref TEXT, promotion_of TEXT, scan_id TEXT, created_at TEXT NOT NULL,
   UNIQUE (subject_id, version_no),

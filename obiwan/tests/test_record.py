@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 
 import pytest
 
@@ -25,6 +26,28 @@ def record(data_dir):
 def _source_doc(record, subject="f1", h="h1"):
     return record.add_document(subject_id=subject, origin="source", content_hash=h, media_type="text/markdown",
                                created_at=T0, title="a.md", scan_id="s1")
+
+
+def test_a_write_from_another_thread_is_not_swallowed_by_an_open_transaction(record):
+    started, done = threading.Event(), threading.Event()
+
+    def other_thread():
+        started.set()
+        record.add_event("accepted", role="writer", payload={"from": "other thread"})
+        done.set()
+
+    t = threading.Thread(target=other_thread)
+    with pytest.raises(RuntimeError):
+        with record.transaction():
+            _source_doc(record)
+            t.start()
+            started.wait(timeout=5)
+            assert not done.wait(timeout=0.2)  # blocked on the lock, not folded into this transaction
+            raise RuntimeError("roll back only this transaction")
+    t.join(timeout=5)
+    assert done.is_set()
+    assert [e.payload for e in record.events(limit=5, kind="accepted")] == [{"from": "other thread"}]
+    assert record.latest_documents() == []
 
 
 def test_schema_is_created_with_powers_seeded(record):

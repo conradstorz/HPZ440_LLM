@@ -130,17 +130,19 @@ class Record:
     # ----- writes -----
 
     def mint_file(self, *, root: str, first_seen_at: datetime, duplicate_of: str | None = None) -> str:
-        file_id = new_id()
-        self.conn.execute("INSERT INTO files(file_id, root, first_seen_at, duplicate_of) VALUES (?, ?, ?, ?)",
-                          (file_id, root, _iso(first_seen_at), duplicate_of))
-        return file_id
+        with self.transaction():
+            file_id = new_id()
+            self.conn.execute("INSERT INTO files(file_id, root, first_seen_at, duplicate_of) VALUES (?, ?, ?, ?)",
+                              (file_id, root, _iso(first_seen_at), duplicate_of))
+            return file_id
 
     def add_sighting(self, *, file_id: str, root: str, path: str, content_hash: str, size: int, mtime: str,
                      seen_at: datetime, scan_id: str) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO sightings(file_id, root, path, content_hash, size, mtime, seen_at, scan_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (file_id, root, path, content_hash, size, mtime, _iso(seen_at), scan_id))
-        return int(cur.lastrowid)
+        with self.transaction():
+            cur = self.conn.execute(
+                "INSERT INTO sightings(file_id, root, path, content_hash, size, mtime, seen_at, scan_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (file_id, root, path, content_hash, size, mtime, _iso(seen_at), scan_id))
+            return int(cur.lastrowid)
 
     def add_document(self, *, subject_id: str, origin: str, content_hash: str, media_type: str, created_at: datetime,
                      attestation: str | None = None, size: int | None = None, mtime: str | None = None,
@@ -157,7 +159,8 @@ class Record:
         return self.document(doc_id)
 
     def add_text(self, doc_id: str, content: str) -> None:
-        self.conn.execute("INSERT INTO texts(doc_id, content) VALUES (?, ?)", (doc_id, content))
+        with self.transaction():
+            self.conn.execute("INSERT INTO texts(doc_id, content) VALUES (?, ?)", (doc_id, content))
 
     def add_chunks(self, doc_id: str, specs: Iterable[ChunkSpec]) -> list[Chunk]:
         out = []
@@ -170,17 +173,20 @@ class Record:
         return out
 
     def add_tombstone(self, *, subject_id: str, reason: str, ordered_by: str, created_at: datetime) -> Tombstone:
-        cur = self.conn.execute("INSERT INTO tombstones(subject_id, reason, ordered_by, created_at) VALUES (?, ?, ?, ?)",
-                                (subject_id, reason, ordered_by, _iso(created_at)))
-        return Tombstone(id=int(cur.lastrowid), subject_id=subject_id, reason=reason, ordered_by=ordered_by, created_at=created_at)
+        with self.transaction():
+            cur = self.conn.execute("INSERT INTO tombstones(subject_id, reason, ordered_by, created_at) VALUES (?, ?, ?, ?)",
+                                    (subject_id, reason, ordered_by, _iso(created_at)))
+            return Tombstone(id=int(cur.lastrowid), subject_id=subject_id, reason=reason, ordered_by=ordered_by, created_at=created_at)
 
     def add_event(self, kind: str, *, role: str | None = None, payload: dict[str, Any] | None = None) -> None:
-        self.conn.execute("INSERT INTO events(ts, kind, role, payload) VALUES (?, ?, ?, ?)",
-                          (_iso(utcnow()), kind, role, json.dumps(payload or {}, ensure_ascii=False, default=str)))
+        with self.transaction():
+            self.conn.execute("INSERT INTO events(ts, kind, role, payload) VALUES (?, ?, ?, ?)",
+                              (_iso(utcnow()), kind, role, json.dumps(payload or {}, ensure_ascii=False, default=str)))
 
     def add_scan(self, *, scan_id: str, started_at: datetime, finished_at: datetime, report: dict[str, Any]) -> None:
-        self.conn.execute("INSERT INTO scans(scan_id, started_at, finished_at, report) VALUES (?, ?, ?, ?)",
-                          (scan_id, _iso(started_at), _iso(finished_at), json.dumps(report, ensure_ascii=False, default=str)))
+        with self.transaction():
+            self.conn.execute("INSERT INTO scans(scan_id, started_at, finished_at, report) VALUES (?, ?, ?, ?)",
+                              (scan_id, _iso(started_at), _iso(finished_at), json.dumps(report, ensure_ascii=False, default=str)))
 
     # ----- reads -----
 
@@ -201,7 +207,7 @@ class Record:
         return self._many(Sighting, "SELECT * FROM sightings WHERE file_id = ? ORDER BY id", (file_id,))
 
     def file_ids_with_hash(self, content_hash: str) -> list[str]:
-        """Files whose LATEST sighting carries this hash, oldest file first."""
+        """Files whose LATEST sighting carries this hash, ordered by that sighting's id."""
         rows = self.conn.execute(
             "SELECT s.file_id FROM sightings s WHERE s.id = (SELECT max(id) FROM sightings WHERE file_id = s.file_id) "
             "AND s.content_hash = ? ORDER BY s.id", (content_hash,)).fetchall()
