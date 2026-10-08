@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 
 from obiwan.auth import Gate
@@ -134,6 +136,25 @@ def test_relay_without_a_conversation_ref_is_a_value_error(svc):
         svc.relay(content="x", conversation_ref=None, title=None, role="writer")
     with pytest.raises(ValueError):
         svc.relay(content="x", conversation_ref="  ", title=None, role="writer")
+
+
+def test_coverage_names_a_terminally_failed_document(settings, corpus):
+    (corpus / "bad.pdf").write_bytes(b"not a pdf at all")
+    clock = [T0]
+    r = Record(settings.record_path)
+    service = Service(settings, record=r, work=WorkQueue(r), projection=FtsProjection(settings.index_dir, r), inbox=Inbox(settings.inbox_dir),
+                      gate=Gate(r, settings), now=lambda: clock[0])
+    try:
+        for _ in range(settings.max_attempts):
+            service.scan(role="writer")
+            clock[0] = clock[0] + timedelta(days=2)
+        cov = service.coverage()
+        assert cov["documents_failed"] == 1
+        assert cov["work_failed"] == 1
+        assert cov["complete"] is False
+    finally:
+        service.projection.close()
+        service.record.close()
 
 
 def test_status_and_journal(svc, inbox_dir):

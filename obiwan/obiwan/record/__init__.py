@@ -277,5 +277,7 @@ class Record:
                               "AND NOT EXISTS (SELECT 1 FROM chunks c LEFT JOIN projection p ON p.chunk_id = c.chunk_id AND p.kind = 'fts' "
                               "WHERE c.doc_id = l.doc_id AND (p.state IS NULL OR p.state != 'current'))").fetchone()[0]
         tombstoned = q("SELECT count(DISTINCT subject_id) FROM tombstones").fetchone()[0]
+        documents_failed = q(self._LATEST_LIVE + "SELECT count(*) FROM latest l WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = l.doc_id) "
+                              "AND EXISTS (SELECT 1 FROM work w WHERE w.kind = 'extract' AND w.target = l.doc_id AND w.state = 'failed')").fetchone()[0]
         return {"documents": documents, "documents_indexed": documents_indexed, "chunks": chunks, "chunks_indexed": chunks_indexed,
-                "tombstoned": tombstoned}
+                "tombstoned": tombstoned, "documents_failed": documents_failed}

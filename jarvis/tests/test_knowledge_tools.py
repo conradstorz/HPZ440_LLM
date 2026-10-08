@@ -49,7 +49,17 @@ def test_search_warns_when_the_index_is_incomplete(data_dir):
     fk = FakeKnowledge(coverage={"documents": 9, "documents_indexed": 4, "chunks": 1, "chunks_indexed": 1, "work_pending": 5, "work_failed": 0, "complete": False})
     reg = ToolRegistry(Policy(j), j, knowledge_tools(fk, j, content_chars=60))
     out = run(reg, "search_knowledge", query="zebras")
-    assert out.splitlines()[0] == "coverage: 4/9 documents indexed, 5 pending, 0 failed (INDEX INCOMPLETE: the answer may be missing)"
+    assert out.splitlines()[0] == "coverage: 4/9 documents indexed, 5 pending, 0 failed (INDEX INCOMPLETE: 5 pending)"
+
+
+def test_search_warns_with_documents_failed_reason(data_dir):
+    j = Journal(data_dir)
+    fk = FakeKnowledge(coverage={"documents": 9, "documents_indexed": 8, "chunks": 1, "chunks_indexed": 1, "work_pending": 0,
+                                 "work_failed": 1, "documents_failed": 1, "complete": False})
+    reg = ToolRegistry(Policy(j), j, knowledge_tools(fk, j, content_chars=60))
+    out = run(reg, "search_knowledge", query="zebras")
+    assert out.splitlines()[0] == ("coverage: 8/9 documents indexed, 0 pending, 1 failed "
+                                   "(INDEX INCOMPLETE: 1 documents failed extraction, see obiwan status)")
 
 
 def test_search_with_no_results(data_dir):

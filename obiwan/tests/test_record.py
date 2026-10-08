@@ -172,6 +172,6 @@ def test_coverage_counts_latest_non_tombstoned_only(record):
     record.add_tombstone(subject_id="f2", reason="r", ordered_by="commander", created_at=T0)
     record.conn.execute("INSERT INTO projection(chunk_id, kind, state) VALUES (?, 'fts', 'current')", (f"{b.doc_id}-0",))
     cov = record.coverage_counts()
-    assert cov == {"documents": 1, "documents_indexed": 0, "chunks": 2, "chunks_indexed": 1, "tombstoned": 1}
+    assert cov == {"documents": 1, "documents_indexed": 0, "chunks": 2, "chunks_indexed": 1, "tombstoned": 1, "documents_failed": 0}
     record.conn.execute("INSERT INTO projection(chunk_id, kind, state) VALUES (?, 'fts', 'current')", (f"{b.doc_id}-1",))
     assert record.coverage_counts()["documents_indexed"] == 1

@@ -22,7 +22,18 @@ class Knowledge(Protocol):
 def _coverage_line(cov: dict) -> str:
     line = (f"coverage: {cov.get('documents_indexed', '?')}/{cov.get('documents', '?')} documents indexed, "
             f"{cov.get('work_pending', '?')} pending, {cov.get('work_failed', '?')} failed")
-    return line if cov.get("complete") else line + " (INDEX INCOMPLETE: the answer may be missing)"
+    if cov.get("complete"):
+        return line
+    reasons = []
+    if cov.get("work_pending", 0) > 0:
+        reasons.append(f"{cov['work_pending']} pending")
+    if cov.get("documents_failed", 0) > 0:
+        reasons.append(f"{cov['documents_failed']} documents failed extraction, see obiwan status")
+    for r in cov.get("roots", []):
+        if not r.get("reachable", True):
+            reasons.append(f"root {r.get('name')} unreachable")
+    reason = "; ".join(reasons) if reasons else "the answer may be missing"
+    return line + f" (INDEX INCOMPLETE: {reason})"
 
 
 def knowledge_tools(knowledge: Knowledge, journal: Journal, *, content_chars: int) -> list[Tool]:
