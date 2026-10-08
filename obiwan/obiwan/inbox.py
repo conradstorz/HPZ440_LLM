@@ -85,15 +85,23 @@ def process_inbox(inbox: Inbox, *, record: Record, projection: FtsProjection, se
         dest = inbox.destination(p, now.date())
         rel = dest.relative_to(inbox.path).as_posix()
         mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=now.tzinfo).isoformat()
-        with record.transaction():
-            duplicate_of = next(iter(record.file_ids_with_hash(digest)), None)
-            file_id = record.mint_file(root=RESERVED_ROOT, first_seen_at=now, duplicate_of=duplicate_of)
-            record.add_sighting(file_id=file_id, root=RESERVED_ROOT, path=rel, content_hash=digest, size=size, mtime=mtime,
-                                seen_at=now, scan_id=scan_id)
-            doc = record.add_document(subject_id=file_id, origin="source", content_hash=digest, media_type=media_type_for(p),
-                                      size=size, mtime=mtime, title=p.name, scan_id=scan_id, created_at=now)
-            chunks = record.add_chunks(doc.doc_id, specs)
-            p.replace(dest)  # inside the transaction: if the move fails, the record rolls back and the file stays pending
+        try:
+            with record.transaction():
+                duplicate_of = next(iter(record.file_ids_with_hash(digest)), None)
+                file_id = record.mint_file(root=RESERVED_ROOT, first_seen_at=now, duplicate_of=duplicate_of)
+                record.add_sighting(file_id=file_id, root=RESERVED_ROOT, path=rel, content_hash=digest, size=size, mtime=mtime,
+                                    seen_at=now, scan_id=scan_id)
+                doc = record.add_document(subject_id=file_id, origin="source", content_hash=digest, media_type=media_type_for(p),
+                                          size=size, mtime=mtime, title=p.name, scan_id=scan_id, created_at=now)
+                chunks = record.add_chunks(doc.doc_id, specs)
+                p.replace(dest)  # inside the transaction: if the move fails, the record rolls back and the file stays pending
+        except Exception as e:  # noqa: BLE001 - the file stays in the inbox as pending work; the reason is journaled
+            message = f"{type(e).__name__}: {e}"[:1000]
+            record.add_event("inbox_error", payload={"file": p.name, "error": message, "at": now.isoformat(), "scan_id": scan_id,
+                                                     "stayed_pending": True})
+            report.failed += 1
+            report.items.append({"file": p.name, "outcome": "error", "error": message})
+            continue
         projection.index_document(doc, chunks, now=now)
         record.add_event("inbox_recorded", payload={"file": p.name, "doc_id": doc.doc_id, "file_id": file_id, "moved_to": rel,
                                                     "duplicate_of": duplicate_of})

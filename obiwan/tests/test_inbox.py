@@ -79,3 +79,26 @@ def test_an_identical_drop_is_a_second_file_with_duplicate_noted(world, inbox_di
     assert len(docs) == 2
     dup = next(d for d in docs if d.title == "b.md")
     assert r.file(dup.subject_id).duplicate_of == next(d for d in docs if d.title == "a.md").subject_id
+
+
+def test_a_failed_move_leaves_the_file_pending_journals_it_and_continues(world, inbox_dir, settings, monkeypatch):
+    from pathlib import Path
+
+    r, p, box = world
+    (inbox_dir / "a.md").write_text("first zebra note\n", encoding="utf-8", newline="\n")
+    (inbox_dir / "b.md").write_text("second zebra note\n", encoding="utf-8", newline="\n")
+    real_replace = Path.replace
+
+    def flaky_replace(self, target):
+        if self.name == "a.md":
+            raise OSError(5, "simulated I/O error")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    rep = process_inbox(box, record=r, projection=p, settings=settings, scan_id="s1", now=T0)
+    assert (rep.recorded, rep.failed) == (1, 1)
+    assert (inbox_dir / "a.md").is_file()  # still pending, not quarantined
+    assert [d.title for d in r.latest_documents()] == ["b.md"]  # nothing of a.md reached the record
+    assert r.conn.execute("SELECT count(*) FROM files").fetchone()[0] == 1
+    ev = r.events(limit=5, kind="inbox_error")[0]
+    assert ev.payload["file"] == "a.md" and ev.payload["error"].startswith("OSError") and ev.payload["stayed_pending"] is True
