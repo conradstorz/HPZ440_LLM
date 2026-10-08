@@ -13,7 +13,7 @@ from obiwan.core.config import RESERVED_ROOT, Settings
 from obiwan.core.ids import new_id, sha256_text, utcnow
 from obiwan.inbox import Inbox, process_inbox
 from obiwan.projection import FtsProjection
-from obiwan.record import Document, Record
+from obiwan.record import Chunk, Document, Record
 from obiwan.scanner import scan_roots
 from obiwan.work import WorkQueue
 from obiwan.worker import drain
@@ -32,35 +32,36 @@ class Service:
     # ----- writes -----
 
     def _store_text(self, *, subject_id: str, origin: str, attestation: str | None, content: str, title: str | None, role: str,
-                    conversation_ref: str | None = None, promotion_of: str | None = None) -> Document:
+                    now: datetime, conversation_ref: str | None = None, promotion_of: str | None = None) -> tuple[Document, list[Chunk]]:
         if not content.strip():
             raise ValueError("content is empty")
         if len(content) > self.settings.max_submit_chars:
             raise ValueError(f"content is {len(content)} chars, above the {self.settings.max_submit_chars} limit")
-        now = self._now()
-        with self.record.transaction():
-            doc = self.record.add_document(subject_id=subject_id, origin=origin, attestation=attestation, content_hash=sha256_text(content),
-                                           media_type="text/plain", size=len(content.encode("utf-8")), title=title, submitted_by=role,
-                                           conversation_ref=conversation_ref, promotion_of=promotion_of, created_at=now)
-            self.record.add_text(doc.doc_id, content)
-            chunks = self.record.add_chunks(doc.doc_id, chunk_text(content, chunk_chars=self.settings.chunk_chars))
-        self.projection.index_document(doc, chunks, now=now)
-        return doc
+        doc = self.record.add_document(subject_id=subject_id, origin=origin, attestation=attestation, content_hash=sha256_text(content),
+                                       media_type="text/plain", size=len(content.encode("utf-8")), title=title, submitted_by=role,
+                                       conversation_ref=conversation_ref, promotion_of=promotion_of, created_at=now)
+        self.record.add_text(doc.doc_id, content)
+        chunks = self.record.add_chunks(doc.doc_id, chunk_text(content, chunk_chars=self.settings.chunk_chars))
+        return doc, chunks
 
     def submit(self, *, content: str, title: str | None, role: str) -> dict:
+        now = self._now()
         with self.record.transaction():
-            doc = self._store_text(subject_id=new_id(), origin="machine", attestation=None, content=content, title=title, role=role)
+            doc, chunks = self._store_text(subject_id=new_id(), origin="machine", attestation=None, content=content, title=title, role=role, now=now)
             self.record.add_event("accepted", role=role, payload={"route": "submit", "doc_id": doc.doc_id, "subject_id": doc.subject_id})
+        self.projection.index_document(doc, chunks, now=now)
         return self._written(doc)
 
     def relay(self, *, content: str, conversation_ref: str, title: str | None, role: str) -> dict:
         if not (conversation_ref or "").strip():
             raise ValueError("conversation_ref is required: a relayed record carries where the Commander said it")
+        now = self._now()
         with self.record.transaction():
-            doc = self._store_text(subject_id=new_id(), origin="human", attestation="relayed", content=content, title=title, role=role,
-                                   conversation_ref=conversation_ref)
+            doc, chunks = self._store_text(subject_id=new_id(), origin="human", attestation="relayed", content=content, title=title, role=role,
+                                           now=now, conversation_ref=conversation_ref)
             self.record.add_event("accepted", role=role, payload={"route": "relay", "doc_id": doc.doc_id, "subject_id": doc.subject_id,
                                                                   "conversation_ref": conversation_ref})
+        self.projection.index_document(doc, chunks, now=now)
         return self._written(doc)
 
     def _live_latest(self, subject_id: str) -> Document:
@@ -79,11 +80,13 @@ class Service:
         content = self.record.text(latest.doc_id)
         if content is None:
             raise ValueError("the relayed record has no stored text to promote")
+        now = self._now()
         with self.record.transaction():
-            doc = self._store_text(subject_id=subject_id, origin="human", attestation="direct", content=content, title=latest.title, role=role,
-                                   conversation_ref=latest.conversation_ref, promotion_of=latest.doc_id)
+            doc, chunks = self._store_text(subject_id=subject_id, origin="human", attestation="direct", content=content, title=latest.title,
+                                           role=role, now=now, conversation_ref=latest.conversation_ref, promotion_of=latest.doc_id)
             self.record.add_event("promotion", role=role, payload={"subject_id": subject_id, "from_doc_id": latest.doc_id, "to_doc_id": doc.doc_id,
                                                                    "from": "relayed", "to": "direct"})
+        self.projection.index_document(doc, chunks, now=now)
         return {**self._written(doc), "promoted_from": latest.doc_id}
 
     def forget(self, *, subject_id: str, reason: str, role: str) -> dict:
@@ -92,9 +95,9 @@ class Service:
         now = self._now()
         with self.record.transaction():
             tomb = self.record.add_tombstone(subject_id=subject_id, reason=reason, ordered_by=role, created_at=now)
-            self.projection.retire_subject(subject_id, reason="forgotten", now=now)
             self.record.add_event("tombstone", role=role, payload={"subject_id": subject_id, "doc_id": latest.doc_id, "reason": reason,
                                                                    "origin": latest.origin, "attestation": latest.attestation})
+        self.projection.retire_subject(subject_id, reason="forgotten", now=now)
         return {"subject_id": subject_id, "tombstone": tomb.model_dump(mode="json")}
 
     def scan(self, *, role: str) -> dict:

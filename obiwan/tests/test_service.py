@@ -131,6 +131,24 @@ def test_a_write_whose_journal_entry_fails_is_rolled_back_whole(svc, monkeypatch
     assert svc.record.conn.execute("SELECT count(*) FROM texts").fetchone()[0] == 0
 
 
+def test_a_failed_promotion_journal_entry_leaves_the_relayed_version_searchable(svc, monkeypatch):
+    relayed = svc.relay(content="The NAS lives in the basement.", conversation_ref="chat-77", title=None, role="writer")
+    hit = svc.search("basement NAS", k=5)["results"][0]
+    assert hit["attestation"] == "relayed"
+
+    def boom(kind, *, role=None, payload=None):
+        raise RuntimeError("journal unavailable")
+
+    monkeypatch.setattr(svc.record, "add_event", boom)
+    with pytest.raises(RuntimeError):
+        svc.confirm(subject_id=relayed["subject_id"], role="commander")
+
+    doc = svc.document(relayed["doc_id"])
+    assert len(doc["versions"]) == 1 and doc["versions"][0]["attestation"] == "relayed"
+    hit = svc.search("basement NAS", k=5)["results"]
+    assert len(hit) == 1 and hit[0]["attestation"] == "relayed"
+
+
 def test_relay_without_a_conversation_ref_is_a_value_error(svc):
     with pytest.raises(ValueError):
         svc.relay(content="x", conversation_ref=None, title=None, role="writer")
