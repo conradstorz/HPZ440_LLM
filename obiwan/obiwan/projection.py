@@ -55,10 +55,11 @@ class FtsProjection:
 
     def _set_state(self, chunk_ids: list[str], state: str, *, reason: str | None, now: datetime) -> None:
         built = now.isoformat() if state == "current" else None
-        self._record.conn.executemany(
-            "INSERT INTO projection(chunk_id, kind, state, reason, built_at) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(chunk_id, kind) DO UPDATE SET state = excluded.state, reason = excluded.reason, built_at = excluded.built_at",
-            [(cid, KIND, state, reason, built) for cid in chunk_ids])
+        with self._record.transaction():
+            self._record.conn.executemany(
+                "INSERT INTO projection(chunk_id, kind, state, reason, built_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(chunk_id, kind) DO UPDATE SET state = excluded.state, reason = excluded.reason, built_at = excluded.built_at",
+                [(cid, KIND, state, reason, built) for cid in chunk_ids])
 
     def _remove(self, chunk_ids: list[str]) -> None:
         self._conn.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", [(cid,) for cid in chunk_ids])
@@ -97,7 +98,8 @@ class FtsProjection:
     def rebuild(self, *, now: datetime) -> int:
         """Discard the projection and rebuild it from stored chunks. No source file is read, no text re-extracted."""
         self._create()
-        self._record.conn.execute("UPDATE projection SET state = 'pending', reason = NULL, built_at = NULL WHERE kind = ?", (KIND,))
+        with self._record.transaction():
+            self._record.conn.execute("UPDATE projection SET state = 'pending', reason = NULL, built_at = NULL WHERE kind = ?", (KIND,))
         n = 0
         for doc in self._record.latest_documents():
             if self._record.tombstone_for(doc.subject_id) is not None:
@@ -107,10 +109,11 @@ class FtsProjection:
                 self.index_document(doc, chunks, now=now)
                 n += len(chunks)
         # Whatever is still pending belongs to superseded versions or forgotten subjects.
-        self._record.conn.execute(
-            "UPDATE projection SET state = 'stale', reason = CASE WHEN EXISTS (SELECT 1 FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
-            "JOIN tombstones t ON t.subject_id = d.subject_id WHERE c.chunk_id = projection.chunk_id) THEN 'forgotten' ELSE 'superseded' END "
-            "WHERE kind = ? AND state = 'pending'", (KIND,))
+        with self._record.transaction():
+            self._record.conn.execute(
+                "UPDATE projection SET state = 'stale', reason = CASE WHEN EXISTS (SELECT 1 FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
+                "JOIN tombstones t ON t.subject_id = d.subject_id WHERE c.chunk_id = projection.chunk_id) THEN 'forgotten' ELSE 'superseded' END "
+                "WHERE kind = ? AND state = 'pending'", (KIND,))
         return n
 
     def count(self) -> int:

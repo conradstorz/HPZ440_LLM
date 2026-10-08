@@ -118,6 +118,24 @@ def test_reindex_rebuilds_from_chunks_without_reading_sources(svc, corpus):
     assert svc.record.events(limit=1)[0].kind == "reindex"
 
 
+def test_a_write_whose_journal_entry_fails_is_rolled_back_whole(svc, monkeypatch):
+    def boom(kind, *, role=None, payload=None):
+        raise RuntimeError("journal unavailable")
+
+    monkeypatch.setattr(svc.record, "add_event", boom)
+    with pytest.raises(RuntimeError):
+        svc.submit(content="an inference that must not survive", title=None, role="writer")
+    assert svc.record.latest_documents() == []
+    assert svc.record.conn.execute("SELECT count(*) FROM texts").fetchone()[0] == 0
+
+
+def test_relay_without_a_conversation_ref_is_a_value_error(svc):
+    with pytest.raises(ValueError):
+        svc.relay(content="x", conversation_ref=None, title=None, role="writer")
+    with pytest.raises(ValueError):
+        svc.relay(content="x", conversation_ref="  ", title=None, role="writer")
+
+
 def test_status_and_journal(svc, inbox_dir):
     (inbox_dir / "drop.md").write_text("dropped zebra note\n", encoding="utf-8")
     (inbox_dir / "bad.pdf").write_bytes(b"nope")

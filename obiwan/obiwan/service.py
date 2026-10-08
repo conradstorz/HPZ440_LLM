@@ -48,17 +48,19 @@ class Service:
         return doc
 
     def submit(self, *, content: str, title: str | None, role: str) -> dict:
-        doc = self._store_text(subject_id=new_id(), origin="machine", attestation=None, content=content, title=title, role=role)
-        self.record.add_event("accepted", role=role, payload={"route": "submit", "doc_id": doc.doc_id, "subject_id": doc.subject_id})
+        with self.record.transaction():
+            doc = self._store_text(subject_id=new_id(), origin="machine", attestation=None, content=content, title=title, role=role)
+            self.record.add_event("accepted", role=role, payload={"route": "submit", "doc_id": doc.doc_id, "subject_id": doc.subject_id})
         return self._written(doc)
 
     def relay(self, *, content: str, conversation_ref: str, title: str | None, role: str) -> dict:
-        if not conversation_ref.strip():
+        if not (conversation_ref or "").strip():
             raise ValueError("conversation_ref is required: a relayed record carries where the Commander said it")
-        doc = self._store_text(subject_id=new_id(), origin="human", attestation="relayed", content=content, title=title, role=role,
-                               conversation_ref=conversation_ref)
-        self.record.add_event("accepted", role=role, payload={"route": "relay", "doc_id": doc.doc_id, "subject_id": doc.subject_id,
-                                                              "conversation_ref": conversation_ref})
+        with self.record.transaction():
+            doc = self._store_text(subject_id=new_id(), origin="human", attestation="relayed", content=content, title=title, role=role,
+                                   conversation_ref=conversation_ref)
+            self.record.add_event("accepted", role=role, payload={"route": "relay", "doc_id": doc.doc_id, "subject_id": doc.subject_id,
+                                                                  "conversation_ref": conversation_ref})
         return self._written(doc)
 
     def _live_latest(self, subject_id: str) -> Document:
@@ -77,20 +79,22 @@ class Service:
         content = self.record.text(latest.doc_id)
         if content is None:
             raise ValueError("the relayed record has no stored text to promote")
-        doc = self._store_text(subject_id=subject_id, origin="human", attestation="direct", content=content, title=latest.title, role=role,
-                               conversation_ref=latest.conversation_ref, promotion_of=latest.doc_id)
-        self.record.add_event("promotion", role=role, payload={"subject_id": subject_id, "from_doc_id": latest.doc_id, "to_doc_id": doc.doc_id,
-                                                               "from": "relayed", "to": "direct"})
+        with self.record.transaction():
+            doc = self._store_text(subject_id=subject_id, origin="human", attestation="direct", content=content, title=latest.title, role=role,
+                                   conversation_ref=latest.conversation_ref, promotion_of=latest.doc_id)
+            self.record.add_event("promotion", role=role, payload={"subject_id": subject_id, "from_doc_id": latest.doc_id, "to_doc_id": doc.doc_id,
+                                                                   "from": "relayed", "to": "direct"})
         return {**self._written(doc), "promoted_from": latest.doc_id}
 
     def forget(self, *, subject_id: str, reason: str, role: str) -> dict:
         """P4: forgetting inserts a tombstone and retires the projection. The record keeps what was forgotten and why."""
         latest = self._live_latest(subject_id)
         now = self._now()
-        tomb = self.record.add_tombstone(subject_id=subject_id, reason=reason, ordered_by=role, created_at=now)
-        self.projection.retire_subject(subject_id, reason="forgotten", now=now)
-        self.record.add_event("tombstone", role=role, payload={"subject_id": subject_id, "doc_id": latest.doc_id, "reason": reason,
-                                                               "origin": latest.origin, "attestation": latest.attestation})
+        with self.record.transaction():
+            tomb = self.record.add_tombstone(subject_id=subject_id, reason=reason, ordered_by=role, created_at=now)
+            self.projection.retire_subject(subject_id, reason="forgotten", now=now)
+            self.record.add_event("tombstone", role=role, payload={"subject_id": subject_id, "doc_id": latest.doc_id, "reason": reason,
+                                                                   "origin": latest.origin, "attestation": latest.attestation})
         return {"subject_id": subject_id, "tombstone": tomb.model_dump(mode="json")}
 
     def scan(self, *, role: str) -> dict:

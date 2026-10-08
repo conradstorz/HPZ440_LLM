@@ -97,3 +97,29 @@ def test_reindexing_the_same_document_does_not_duplicate_rows(world):
     d, chunks = _doc(r, p, "f1", "Zebras.")
     p.index_document(d, chunks, now=T0)
     assert p.count() == 1 and p.state_counts() == {"current": 1}
+
+
+def test_projection_state_from_another_thread_is_not_swallowed_by_an_open_transaction(world):
+    import threading
+
+    r, p = world
+    d, chunks = _doc(r, p, "f1", "Zebras.")
+    started, done = threading.Event(), threading.Event()
+
+    def other_thread():
+        started.set()
+        p.retire_subject("f1", reason="forgotten", now=T0)
+        done.set()
+
+    t = threading.Thread(target=other_thread)
+    with pytest.raises(RuntimeError):
+        with r.transaction():
+            r.add_document(subject_id="f9", origin="source", content_hash="x", media_type="text/plain", created_at=T0)
+            t.start()
+            started.wait(timeout=5)
+            assert not done.wait(timeout=0.2)  # blocked on the lock, not folded into this transaction
+            raise RuntimeError("roll back only this transaction")
+    t.join(timeout=5)
+    assert done.is_set()
+    assert p.state_counts() == {"stale": 1}
+    assert r.latest_documents() == [] or all(x.subject_id != "f9" for x in r.latest_documents())
