@@ -128,6 +128,23 @@ Exit criteria:
 
 Decisions this phase resolves: chat transport (OpenAI-compatible endpoint inside the existing service, not a second container); how teaching is stored (versioned notes beside the archive, not prompt-file edits); whether workstation documents are archived (no, read on demand).
 
+## Obi-Wan v0.1: the Historian
+
+Obi-Wan v0.1 status: implemented 2026-10-07 per `docs/superpowers/specs/2026-10-07-obiwan-v0.1-mvp.md` and
+`docs/superpowers/plans/2026-10-07-obiwan-v0.1.md`. A third actor beside Conrad (Commander) and Jarvis (Admiral): the
+service that keeps the record. Inserted here because, like Phase 1.5, it adds no outbound capability: Obi-Wan calls
+no model and holds no credential to anything outside the host.
+
+What it adds: a second service `obiwan` with an append-only record of files, versions, chunks and provenance; a
+disposable FTS5 projection; scanning of read-only source roots and a writable inbox; three credentials (reader,
+writer, commander) whose powers are rows in the record; the attestation ladder `relayed` → `direct` for what Conrad
+says; and in Jarvis the `search_knowledge`, `relay_fact` and `record_note` tools under the new `obiwan_search` and
+`obiwan_submit` policy actions. Jarvis never receives the commander credential. Details: `docs/obiwan.md`.
+
+Deferred to later phases: embeddings and any model call from Obi-Wan; migrating the Jarvis mail archive behind it
+(and with it the shared NKO package); one-time-password attestation; NAS-scale identity and crawling; per-sub-agent
+credentials.
+
 ## Phase 2: Propose (drafts and proposed actions)
 
 Goal: permission stage 2. Jarvis prepares reply drafts and proposed actions (Gmail archive, label, unsubscribe) for review. Still nothing leaves the network or the inbox.

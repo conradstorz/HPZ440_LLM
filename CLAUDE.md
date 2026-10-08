@@ -24,6 +24,11 @@ pwsh -NoProfile -File scripts/jarvis-auth.ps1 [-CredentialsPath p]   # one-time 
 pwsh -NoProfile -File scripts/jarvis-agent-token.ps1 [-TokenFile p]  # copies the GTE workspace agent token (default ~/.jarvis/agent_token) to /data/secrets/agent_token
 pwsh -NoProfile -File scripts/jarvis-run.ps1                                        # POST /run then GET /health
 pwsh -NoProfile -File scripts/jarvis-reindex.ps1                                    # rebuild FTS index in the container
+pwsh -NoProfile -File scripts/obiwan-scan.ps1                                       # scan source roots and drain pending work
+pwsh -NoProfile -File scripts/obiwan-status.ps1                                     # report roots, coverage, pending, failed work
+pwsh -NoProfile -File scripts/obiwan-reindex.ps1                                    # rebuild search projection from stored chunks
+pwsh -NoProfile -File scripts/obiwan-confirm.ps1 -SubjectId <id>                    # Commander channel; promote relayed to direct
+pwsh -NoProfile -File scripts/obiwan-seed-corpus.ps1 -SourceDir <folder>            # copy documents into the corpus on the host
 ```
 
 Tests (each is a standalone script, no framework; run either individually):
@@ -33,7 +38,7 @@ pwsh -NoProfile -File tests/assert-project-shape.ps1
 pwsh -NoProfile -File tests/assert-script-contracts.ps1
 ```
 
-Python: `cd jarvis` then `uv run pytest` (no network, no GPU).
+Python: `uv --directory jarvis run pytest` (no network, no GPU) or `uv --directory obiwan run pytest` (the Historian, no network).
 
 ## Architecture
 
@@ -43,6 +48,7 @@ Python: `cd jarvis` then `uv run pytest` (no network, no GPU).
 - Two path namespaces: `HOST_MODEL_DIR` (`/srv/llm/models` on the HPZ440) is bind-mounted read-only at `/models` in the container. `LLM_MODEL_PATH` must always be the **container** path (`/models/x.gguf`); `switch-model.ps1` enforces that regex.
 - `jarvis` service builds from `jarvis/`, mounts `HOST_JARVIS_DATA_DIR` at `/data`, publishes `JARVIS_HOST_PORT`. Units import only `jarvis.core`, `jarvis.journal`, `jarvis.policy`; the pipeline wires them. Facts live in NKO v0 and are never rewritten; every later stage is a new version.
 - The same service also serves `/v1/models` and `/v1/chat/completions` (`jarvis.openai_api` over `jarvis.agent`), which is how `open-webui` lists a `jarvis` model beside `llm-api` via `OPENAI_API_BASE_URLS`. Every model-requested tool call goes through `ToolRegistry.run`, which checks `policy` and writes a `tool_call` journal event; there is no other path. Teaching notes live in `/data/notes/notes.jsonl` and pending ones are injected nowhere.
+- `obiwan` service builds from `obiwan/`, mounts `HOST_OBIWAN_DIR/{data,inbox,corpus}` (corpus read-only), publishes port 8070 on the host loopback only. Append-only SQLite record plus a disposable FTS5 projection; origin and attestation are fixed per route from the bearer credential; powers are rows in the record. Jarvis holds reader and writer tokens, never the commander token. See `docs/obiwan.md`.
 
 ## Conventions That Matter Here
 

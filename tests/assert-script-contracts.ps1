@@ -80,4 +80,22 @@ Assert-FileContains 'scripts/stress-test.ps1' 'bench\.load'
 Assert-FileContains 'scripts/stress-test.ps1' 'ignore the prefill'
 Assert-FileNotContains 'scripts/stress-test.ps1' 'localhost:8080'
 
+Assert-FileContains 'scripts/start.ps1' 'OBIWAN_COMMANDER_TOKEN'
+Assert-FileContains 'scripts/start.ps1' 'change-me'
+foreach ($Script in 'scripts/obiwan-scan.ps1', 'scripts/obiwan-status.ps1', 'scripts/obiwan-reindex.ps1', 'scripts/obiwan-confirm.ps1') {
+    Assert-FileContains $Script 'Copy \.env\.example to \.env'
+    Assert-FileContains $Script 'DOCKER_CONTEXT'
+    Assert-FileContains $Script 'exec -T obiwan'
+}
+Assert-FileContains 'scripts/obiwan-scan.ps1' 'obiwan scan'
+Assert-FileContains 'scripts/obiwan-status.ps1' 'obiwan status'
+Assert-FileContains 'scripts/obiwan-reindex.ps1' 'obiwan reindex'
+Assert-FileContains 'scripts/obiwan-confirm.ps1' 'param\(.*\$SubjectId'
+Assert-FileContains 'scripts/obiwan-confirm.ps1' 'obiwan confirm'
+Assert-FileContains 'scripts/obiwan-confirm.ps1' 'obiwan forget'
+Assert-FileContains 'scripts/obiwan-seed-corpus.ps1' 'param\(.*\$SourceDir'
+Assert-FileContains 'scripts/obiwan-seed-corpus.ps1' 'HOST_OBIWAN_DIR'
+Assert-FileContains 'scripts/obiwan-seed-corpus.ps1' 'docker --context \$Context cp'
+Assert-FileNotContains 'scripts/obiwan-seed-corpus.ps1' 'exec -T obiwan'
+
 Write-Host 'Script contract checks passed.'

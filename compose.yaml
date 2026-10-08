@@ -54,6 +54,7 @@ services:
     restart: unless-stopped
     depends_on:
       - llm-api
+      - obiwan
     ports:
       - "${JARVIS_HOST_PORT:-8090}:8090"
     environment:
@@ -70,10 +71,41 @@ services:
       - JARVIS_MAX_PDF_PAGES=${JARVIS_MAX_PDF_PAGES:-20}
       # Same source as llama.cpp's --ctx-size above, so the agent's context budget cannot exceed the server's.
       - JARVIS_CONTEXT_TOKENS=${LLM_CONTEXT_SIZE:-4096}
+      # Obi-Wan: reader and writer credentials only. The commander credential is deliberately absent (D4, S7).
+      - JARVIS_OBIWAN_URL=http://obiwan:8070
+      - JARVIS_OBIWAN_READER_TOKEN=${OBIWAN_READER_TOKEN:-}
+      - JARVIS_OBIWAN_WRITER_TOKEN=${OBIWAN_WRITER_TOKEN:-}
     volumes:
       - "${HOST_JARVIS_DATA_DIR:-/srv/llm/jarvis-data}:/data"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8090/health', timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  obiwan:
+    build: ./obiwan
+    restart: unless-stopped
+    # S5: no published route off the host. Loopback only; the workstation reaches it through the SSH tunnel,
+    # the LAN reaches it only through Jarvis.
+    ports:
+      - "127.0.0.1:${OBIWAN_HOST_PORT:-8070}:8070"
+    environment:
+      - OBIWAN_DATA_DIR=/data
+      - OBIWAN_INBOX_DIR=/inbox
+      # name=path;name=path. Add a NAS share here later; no code change (decision 7).
+      - OBIWAN_SOURCE_ROOTS=corpus=/sources/corpus
+      - OBIWAN_READER_TOKEN=${OBIWAN_READER_TOKEN:-}
+      - OBIWAN_WRITER_TOKEN=${OBIWAN_WRITER_TOKEN:-}
+      - OBIWAN_COMMANDER_TOKEN=${OBIWAN_COMMANDER_TOKEN:-}
+    volumes:
+      - "${HOST_OBIWAN_DIR:-/srv/obiwan}/data:/data"
+      - "${HOST_OBIWAN_DIR:-/srv/obiwan}/inbox:/inbox"
+      # S8: every source root is read-only at the mount, so a code defect cannot write one.
+      - "${HOST_OBIWAN_DIR:-/srv/obiwan}/corpus:/sources/corpus:ro"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8070/health', timeout=3).status==200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 10
