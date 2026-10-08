@@ -20,6 +20,7 @@ def client(settings):
 def test_health_needs_no_credential(client):
     r = client.get("/health")
     assert r.status_code == 200 and r.json()["ok"] is True and r.json()["documents"] == 0
+    assert client.get("/openapi.json").status_code == 404
 
 
 def test_every_other_route_refuses_a_missing_or_unknown_credential(client):

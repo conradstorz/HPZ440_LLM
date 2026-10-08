@@ -47,7 +47,7 @@ def _object(body: Any) -> dict:
 
 
 def create_app(service: Service) -> FastAPI:
-    app = FastAPI(title="Obi-Wan", docs_url=None, redoc_url=None)
+    app = FastAPI(title="Obi-Wan", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.maintenance_lock = threading.Lock()
 
     def guard(power: str):
