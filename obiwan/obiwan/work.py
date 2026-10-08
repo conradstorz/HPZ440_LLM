@@ -28,39 +28,44 @@ def backoff(attempts: int) -> timedelta:
 
 class WorkQueue:
     def __init__(self, record: Record) -> None:
+        self._record = record
         self._conn = record.conn
 
     def enqueue(self, kind: str, target: str, *, now: datetime) -> bool:
-        cur = self._conn.execute(
-            "INSERT OR IGNORE INTO work(kind, target, state, attempts, next_attempt_at, created_at, updated_at) "
-            "VALUES (?, ?, 'pending', 0, ?, ?, ?)", (kind, target, now.isoformat(), now.isoformat(), now.isoformat()))
-        return cur.rowcount == 1
+        with self._record.transaction():
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO work(kind, target, state, attempts, next_attempt_at, created_at, updated_at) "
+                "VALUES (?, ?, 'pending', 0, ?, ?, ?)", (kind, target, now.isoformat(), now.isoformat(), now.isoformat()))
+            return cur.rowcount == 1
 
     _CLAIMABLE = "((state = 'pending' AND next_attempt_at <= :now) OR (state = 'leased' AND lease_until <= :now))"
 
     def claim(self, *, now: datetime, lease_seconds: int) -> WorkItem | None:
         """Lease the next due item. An expired lease is reclaimed: work stranded by a crash is never lost."""
-        params = {"now": now.isoformat(), "until": (now + timedelta(seconds=lease_seconds)).isoformat()}
-        row = self._conn.execute(f"SELECT id FROM work WHERE {self._CLAIMABLE} ORDER BY next_attempt_at, id LIMIT 1", params).fetchone()
-        if row is None:
-            return None
-        cur = self._conn.execute(f"UPDATE work SET state = 'leased', lease_until = :until, updated_at = :now "
-                                 f"WHERE id = :id AND {self._CLAIMABLE}", {**params, "id": row[0]})
-        if cur.rowcount != 1:
-            return None  # another claimant won the race; the caller simply tries again later
-        return self._item(row[0])
+        with self._record.transaction():
+            params = {"now": now.isoformat(), "until": (now + timedelta(seconds=lease_seconds)).isoformat()}
+            row = self._conn.execute(f"SELECT id FROM work WHERE {self._CLAIMABLE} ORDER BY next_attempt_at, id LIMIT 1", params).fetchone()
+            if row is None:
+                return None
+            cur = self._conn.execute(f"UPDATE work SET state = 'leased', lease_until = :until, updated_at = :now "
+                                     f"WHERE id = :id AND {self._CLAIMABLE}", {**params, "id": row[0]})
+            if cur.rowcount != 1:
+                return None  # another claimant won the race; the caller simply tries again later
+            return self._item(row[0])
 
     def complete(self, item_id: int, *, now: datetime) -> None:
-        self._conn.execute("UPDATE work SET state = 'done', lease_until = NULL, updated_at = ? WHERE id = ?", (now.isoformat(), item_id))
+        with self._record.transaction():
+            self._conn.execute("UPDATE work SET state = 'done', lease_until = NULL, updated_at = ? WHERE id = ?", (now.isoformat(), item_id))
 
     def fail(self, item_id: int, error: str, *, now: datetime, max_attempts: int) -> bool:
-        item = self._item(item_id)
-        attempts = item.attempts + 1
-        final = attempts >= max_attempts
-        self._conn.execute(
-            "UPDATE work SET state = ?, attempts = ?, last_error = ?, next_attempt_at = ?, lease_until = NULL, updated_at = ? WHERE id = ?",
-            ("failed" if final else "pending", attempts, error[:1000], (now + backoff(attempts)).isoformat(), now.isoformat(), item_id))
-        return final
+        with self._record.transaction():
+            item = self._item(item_id)
+            attempts = item.attempts + 1
+            final = attempts >= max_attempts
+            self._conn.execute(
+                "UPDATE work SET state = ?, attempts = ?, last_error = ?, next_attempt_at = ?, lease_until = NULL, updated_at = ? WHERE id = ?",
+                ("failed" if final else "pending", attempts, error[:1000], (now + backoff(attempts)).isoformat(), now.isoformat(), item_id))
+            return final
 
     def counts(self) -> dict[str, int]:
         rows = self._conn.execute("SELECT state, count(*) FROM work GROUP BY state").fetchall()

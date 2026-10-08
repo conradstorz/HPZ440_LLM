@@ -1,3 +1,4 @@
+import threading
 from datetime import timedelta
 
 import pytest
@@ -11,6 +12,13 @@ from tests.conftest import T0
 def q(data_dir):
     r = Record(data_dir / "record.sqlite")
     yield WorkQueue(r)
+    r.close()
+
+
+@pytest.fixture
+def record_and_q(data_dir):
+    r = Record(data_dir / "record.sqlite")
+    yield r, WorkQueue(r)
     r.close()
 
 
@@ -63,6 +71,30 @@ def test_fail_postpones_with_backoff_then_gives_up(q):
 def test_failing_an_unknown_item_is_a_clear_error(q):
     with pytest.raises(KeyError, match="no work item 999"):
         q.fail(999, "x", now=T0, max_attempts=3)
+
+
+def test_a_fail_from_another_thread_is_not_swallowed_by_an_open_transaction(record_and_q):
+    r, q = record_and_q
+    q.enqueue("extract", "d1", now=T0)
+    item = q.claim(now=T0, lease_seconds=300)
+    started, done = threading.Event(), threading.Event()
+
+    def other_thread():
+        started.set()
+        q.fail(item.id, "x", now=T0, max_attempts=5)
+        done.set()
+
+    t = threading.Thread(target=other_thread)
+    with pytest.raises(RuntimeError):
+        with r.transaction():
+            t.start()
+            started.wait(timeout=5)
+            assert not done.wait(timeout=0.2)  # blocked on the lock, not folded into this transaction
+            raise RuntimeError("roll back only this transaction")
+    t.join(timeout=5)
+    assert done.is_set()
+    row = r.conn.execute("SELECT attempts, last_error FROM work WHERE id = ?", (item.id,)).fetchone()
+    assert row["attempts"] == 1 and row["last_error"] == "x"
 
 
 def test_backoff_doubles_and_is_capped():
