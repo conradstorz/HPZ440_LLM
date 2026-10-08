@@ -44,3 +44,11 @@ def test_chunking_is_deterministic():
 def test_chunk_chars_must_be_positive():
     with pytest.raises(ValueError):
         chunk_text("abc", chunk_chars=0)
+
+
+def test_windows_line_endings_still_break_paragraphs():
+    text = "aaaa\r\n\r\nbbbb\r\n \r\ncccc"
+    chunks = chunk_text(text, chunk_chars=12)
+    assert [c.text for c in chunks] == ["aaaa\r\n\r\nbbbb", "cccc"]
+    for c in chunks:
+        assert text[c.start_char:c.end_char] == c.text and c.text.strip() == c.text

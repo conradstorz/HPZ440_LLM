@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-_PARA = re.compile(r"\n[ \t]*\n+")
+_PARA = re.compile(r"\r?\n[ \t]*(?:\r?\n)+")
 
 
 @dataclass(frozen=True)
