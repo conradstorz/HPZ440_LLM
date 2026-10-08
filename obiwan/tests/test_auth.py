@@ -61,3 +61,9 @@ def test_claimed_provenance_in_a_payload_is_refused_with_400(gate):
     assert e.value.status == 400 and "attestation, origin" in e.value.reason
     ev = gate.record.events(limit=1)[0]
     assert ev.kind == "refused" and ev.role == "writer" and ev.payload["keys"] == ["attestation", "origin"] and ev.payload["route"] == "submit"
+
+
+def test_a_token_shared_by_two_roles_authenticates_nobody():
+    shared = Settings(_env_file=None, reader_token="r-token", writer_token="same", commander_token="same")
+    assert role_for_token("same", shared) is None
+    assert role_for_token("r-token", shared) == "reader"

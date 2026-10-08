@@ -26,12 +26,12 @@ def bearer(authorization: str | None) -> str:
 
 
 def role_for_token(token: str, settings: Settings) -> str | None:
+    """The one role whose configured token matches. A token shared by two roles is ambiguous and authenticates nobody,
+    so a misconfiguration can never resolve toward more privilege."""
     configured = {"commander": settings.commander_token, "writer": settings.writer_token, "reader": settings.reader_token}
-    for role in ROLES:
-        expected = configured[role]
-        if token and expected and hmac.compare_digest(token.encode("utf-8"), expected.encode("utf-8")):
-            return role
-    return None
+    matches = [role for role in ROLES
+               if token and configured[role] and hmac.compare_digest(token.encode("utf-8"), configured[role].encode("utf-8"))]
+    return matches[0] if len(matches) == 1 else None
 
 
 class Gate:
