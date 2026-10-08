@@ -60,6 +60,11 @@ def test_fail_postpones_with_backoff_then_gives_up(q):
     assert q.claim(now=T0 + timedelta(days=30), lease_seconds=300) is None
 
 
+def test_failing_an_unknown_item_is_a_clear_error(q):
+    with pytest.raises(KeyError, match="no work item 999"):
+        q.fail(999, "x", now=T0, max_attempts=3)
+
+
 def test_backoff_doubles_and_is_capped():
     assert backoff(1) == timedelta(minutes=2)
     assert backoff(2) == timedelta(minutes=4)

@@ -72,4 +72,7 @@ class WorkQueue:
         return [WorkItem.model_validate(dict(r)) for r in rows]
 
     def _item(self, item_id: int) -> WorkItem:
-        return WorkItem.model_validate(dict(self._conn.execute("SELECT * FROM work WHERE id = ?", (item_id,)).fetchone()))
+        row = self._conn.execute("SELECT * FROM work WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"no work item {item_id}")
+        return WorkItem.model_validate(dict(row))
