@@ -56,7 +56,7 @@ Assert-FileContains 'compose.yaml' '\$\{HOST_JARVIS_DATA_DIR:-/srv/llm/jarvis-da
 Assert-FileContains 'compose.yaml' 'JARVIS_LLM_BASE_URL=http://llm-api:8080'
 Assert-FileContains '.env.example' '^JARVIS_HOST_PORT=8090$'
 Assert-FileContains '.env.example' '^JARVIS_GMAIL_ACCOUNT='
-Assert-FileContains '.env.example' '^JARVIS_GMAIL_QUERY=in:inbox$'
+Assert-FileContains '.env.example' '^JARVIS_GMAIL_QUERY=in:inbox newer_than:1d category:primary$'
 Assert-FileContains '.env.example' '^JARVIS_MAX_MESSAGES_PER_RUN=50$'
 Assert-FileContains '.gitignore' '^token\.json$'
 Assert-FileContains '.gitignore' '^credentials\.json$'
@@ -85,6 +85,35 @@ Assert-FileContains 'docs/cost-model.md' '^# Cost Model'
 Assert-FileContains 'docs/cost-model.md' 'lower bound'
 Assert-FileContains 'docs/cost-model.md' 'Break-even'
 Assert-FileContains 'docs/models.md' 'Concurrency'
+
+Assert-FileContains 'compose.yaml' '^  obiwan:$'
+Assert-FileContains 'compose.yaml' '^  obiwan-net:$'
+Assert-FileContains 'compose.yaml' '^    internal: true$'
+Assert-FileContains 'compose.yaml' '\$\{HOST_OBIWAN_DIR:-/srv/obiwan\}/corpus:/sources/corpus:ro'
+Assert-FileContains 'compose.yaml' '\$\{HOST_OBIWAN_DIR:-/srv/obiwan\}/inbox:/inbox'
+Assert-FileContains 'compose.yaml' '\$\{HOST_OBIWAN_DIR:-/srv/obiwan\}/data:/data'
+Assert-FileContains 'compose.yaml' 'OBIWAN_SOURCE_ROOTS=corpus=/sources/corpus'
+Assert-FileContains 'compose.yaml' 'OBIWAN_COMMANDER_TOKEN=\$\{OBIWAN_COMMANDER_TOKEN:-\}'
+Assert-FileContains 'compose.yaml' 'JARVIS_OBIWAN_URL=http://obiwan:8070'
+Assert-FileContains 'compose.yaml' 'JARVIS_OBIWAN_READER_TOKEN=\$\{OBIWAN_READER_TOKEN:-\}'
+Assert-FileContains 'compose.yaml' 'JARVIS_OBIWAN_WRITER_TOKEN=\$\{OBIWAN_WRITER_TOKEN:-\}'
+Assert-FileContains '.env.example' '^HOST_OBIWAN_DIR=/srv/obiwan$'
+Assert-FileContains '.env.example' '^OBIWAN_READER_TOKEN=change-me-reader$'
+Assert-FileContains '.env.example' '^OBIWAN_WRITER_TOKEN=change-me-writer$'
+Assert-FileContains '.env.example' '^OBIWAN_COMMANDER_TOKEN=change-me-commander$'
+Assert-FileContains 'docs/obiwan.md' '^# Obi-Wan'
+Assert-FileContains 'docs/obiwan.md' '^## Live demonstration'
+Assert-FileContains 'docs/roadmap.md' 'Obi-Wan v0\.1'
+Assert-FileContains 'README.md' 'scripts/obiwan-scan\.ps1'
+Assert-FileContains 'README.md' 'docs/obiwan\.md'
+Assert-FileContains 'CLAUDE.md' 'obiwan'
+
+# D4 / S7: the Admiral never receives the commander credential.
+$ComposeLines = Get-Content (Join-Path $Root 'compose.yaml')
+if ($ComposeLines | Where-Object { $_ -match 'JARVIS_OBIWAN_COMMANDER' }) { throw 'compose.yaml must never hand the commander token to jarvis' }
+
+# S5: no published route for obiwan.
+if ($ComposeLines | Where-Object { $_ -match 'OBIWAN_HOST_PORT' }) { throw 'compose.yaml must not reference OBIWAN_HOST_PORT; obiwan has no published port' }
 
 $Gitkeep = Join-Path $Root 'models/.gitkeep'
 if (-not (Test-Path $Gitkeep)) { throw 'Missing models/.gitkeep placeholder' }

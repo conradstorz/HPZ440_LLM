@@ -17,7 +17,7 @@ from jarvis.retrieval import Index
 from jarvis.sources.base import FakeSource
 from jarvis.tools.registry import build_registry
 from jarvis.web import create_app
-from tests.conftest import FakeWorkspace, make_nko
+from tests.conftest import FakeKnowledge, FakeWorkspace, make_nko
 
 CLS = {"group": "reply_suggested", "topic": "t", "requested_action": "reply", "deadline": None, "priority": "normal", "reasoning": "r"}
 DRF = {"reply_text": "ok", "proposed_action": "none", "rationale": "r"}
@@ -71,7 +71,7 @@ def test_chat_endpoint_answers_from_the_real_tool_registry(data_dir):
     store.save_version(n)
     index.index(n)
     tools = build_registry(Policy(journal), journal, store=store, index=index, briefing=briefing, notes=notes,
-                           workspace=FakeWorkspace(), content_chars=6000)
+                           workspace=FakeWorkspace(), knowledge=FakeKnowledge(), content_chars=6000)
     llm = FakeLLM(turns=[ChatTurn(content="", tool_calls=[ToolCall(id="c1", name="search_mail", arguments={"query": "zebra"})],
                                   finish_reason="tool_calls"),
                          ChatTurn(content="Yes: gmail:a:7, the Zebra invoice, is due Friday.")])

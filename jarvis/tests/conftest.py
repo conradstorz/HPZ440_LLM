@@ -66,3 +66,34 @@ class FakeWorkspace:
     def read_document(self, sha256):
         self.calls.append(("read", sha256))
         return self.docs[0], self.text
+
+
+class FakeKnowledge:
+    """Stands in for ObiwanClient: records calls, returns canned provenance-bearing results."""
+
+    def __init__(self, results=None, coverage=None):
+        self.calls = []
+        self.results = results if results is not None else [
+            {"chunk_id": "d1-0", "doc_id": "d1", "subject_id": "f1", "version_no": 1, "origin": "source", "attestation": None,
+             "title": "zebra.md", "location": "corpus:zebra.md", "root": "corpus", "path": "zebra.md", "seq": 0, "start_char": 0,
+             "end_char": 40, "score": 2.5, "snippet": "Zebras migrate", "content": "Zebras migrate across the Serengeti."},
+            {"chunk_id": "d2-0", "doc_id": "d2", "subject_id": "m1", "version_no": 1, "origin": "machine", "attestation": None,
+             "title": None, "location": "machine:m1", "root": None, "path": None, "seq": 0, "start_char": 0, "end_char": 20,
+             "score": 1.0, "snippet": "prefers zebras", "content": "Conrad prefers zebras."},
+            {"chunk_id": "d3-0", "doc_id": "d3", "subject_id": "h1", "version_no": 1, "origin": "human", "attestation": "relayed",
+             "title": None, "location": "human:h1", "root": None, "path": None, "seq": 0, "start_char": 0, "end_char": 20,
+             "score": 0.5, "snippet": "NAS basement", "content": "The NAS is in the basement."}]
+        self.coverage = coverage if coverage is not None else {"documents": 3, "documents_indexed": 3, "chunks": 5, "chunks_indexed": 5,
+                                                                "work_pending": 0, "work_failed": 0, "complete": True}
+
+    def search(self, query, k=8):
+        self.calls.append(("search", query, k))
+        return {"query": query, "results": self.results[:k], "coverage": self.coverage}
+
+    def submit(self, content, title=None):
+        self.calls.append(("submit", content, title))
+        return {"subject_id": "m-new", "doc_id": "d-new", "version_no": 1, "origin": "machine", "attestation": None}
+
+    def relay(self, content, conversation_ref, title=None):
+        self.calls.append(("relay", content, conversation_ref, title))
+        return {"subject_id": "h-new", "doc_id": "d-new2", "version_no": 1, "origin": "human", "attestation": "relayed"}

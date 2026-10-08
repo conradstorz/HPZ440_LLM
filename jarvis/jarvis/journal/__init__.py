@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from jarvis.core.nko import utcnow
 
-EventKind = Literal["run", "capture", "classify", "draft", "correction", "policy_reject", "error", "tool_call", "chat", "note"]
+EventKind = Literal["run", "capture", "classify", "draft", "correction", "policy_reject", "error", "tool_call", "chat", "note",
+                    "obiwan_search", "obiwan_submit"]
 
 
 class JournalEvent(BaseModel):

@@ -70,7 +70,9 @@ def test_poll_stores_raw_and_attachments_and_skips_existing(data_dir, store):
     since = datetime(2025, 9, 20, tzinfo=UTC)
     got = list(src.poll(since))
     assert [n.source_identifier for n in got] == ["18f1a2b3c4d5e6f7", "18f1a2b3c4d5e6f8"]
-    assert api.calls[0] == ("list", "in:inbox after:2025/09/20")
+    # One day earlier than ``since``: Gmail's after: is day-granular and account-timezone-based, so a
+    # UTC-floored date can cut inside the window the caller asked for. See GmailSource.poll.
+    assert api.calls[0] == ("list", "in:inbox after:2025/09/19")
     d = data_dir / "archive" / "gmail_conradstorz@gmail.com_18f1a2b3c4d5e6f8"
     assert (d / "raw.eml").exists()
     att = got[1].attachments[0]
@@ -79,6 +81,20 @@ def test_poll_stores_raw_and_attachments_and_skips_existing(data_dir, store):
     assert not store.exists(got[0].dedup_key), "poll yields v0 but does not save it; the pipeline saves"
     store.save_version(got[0])
     assert [n.source_identifier for n in src.poll(since)] == ["18f1a2b3c4d5e6f8"]
+
+
+def test_poll_window_is_never_narrower_than_the_caller_asked_for(data_dir, store):
+    """Just after midnight UTC, the date floor must not swallow the previous day.
+
+    ``since`` 00:30 on the 21st means "everything from 00:30 on the 21st". Gmail can only filter by
+    date, in the account's own timezone, so ``after:2025/09/21`` would drop every message from the
+    20th -- including the evening mail a caller polling hourly still needs. Naming the 20th keeps the
+    clause a lower bound; ``query`` is where a tighter window belongs, and dedup absorbs the overlap.
+    """
+    api = FakeAPI()
+    src = GmailSource(api, store, account="a", query="in:inbox newer_than:1d", max_attachment_bytes=25_000_000)
+    list(src.poll(datetime(2025, 9, 21, 0, 30, tzinfo=UTC)))
+    assert api.calls[0] == ("list", "in:inbox newer_than:1d after:2025/09/20")
 
 
 def test_poll_skips_oversized_attachment(data_dir, store):

@@ -37,11 +37,27 @@ pwsh -NoProfile -File scripts/stress-test.ps1   # concurrency sweep; rewrites an
 
 See `docs/cost-model.md` for the concurrency sweep results and the hosted-vs-owned break-even comparison.
 
+## Obi-Wan
+
+Obi-Wan is the record keeper: it scans a read-only document corpus and an inbox, versions every file, and serves
+full-text retrieval with provenance and coverage to Jarvis. Ask Jarvis about the documents in chat; confirm a fact it
+relayed with your own credential. Setup and use: `docs/obiwan.md`.
+
+```powershell
+pwsh -NoProfile -File scripts/obiwan-seed-corpus.ps1 -SourceDir <folder>   # copy documents into the corpus on the host
+pwsh -NoProfile -File scripts/obiwan-scan.ps1
+pwsh -NoProfile -File scripts/obiwan-status.ps1
+pwsh -NoProfile -File scripts/obiwan-confirm.ps1 -SubjectId <id>           # Commander only
+pwsh -NoProfile -File scripts/obiwan-reindex.ps1
+pwsh -NoProfile -File scripts/obiwan-call.ps1 -Path /search -Role reader   # any other route, with the right credential
+```
+
 ## Default URLs
 
 - API: `http://localhost:8080/v1`
 - Open WebUI: `http://localhost:3000`
 - Jarvis briefing: `http://localhost:8090` (notes at `/notes`, chat API at `/v1/chat/completions`)
+- Obi-Wan: no published URL; internal network only, reached through Jarvis or `scripts/obiwan-call.ps1`
 
 For LAN clients, replace `localhost` with the HPZ440 hostname or LAN IP.
 

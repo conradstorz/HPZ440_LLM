@@ -29,6 +29,7 @@ special_tokens_map.json
 data/
 open-webui/
 jarvis-data/
+obiwan-data/
 benchmarks/
 logs/
 *.log

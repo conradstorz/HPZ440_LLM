@@ -163,6 +163,80 @@ Problems found and fixed during the run, in order: Google's per-minute quota cut
 
 Classification quality has not yet been judged: no corrections have been submitted. Review the briefing and correct a few cards; the correction rate over the coming weeks is the Phase 2 quality gate.
 
+## Production batch, 2026-10-05
+
+Three consecutive runs against unpolled mail (last prior run 2026-09-30), cap 20 per run, production
+config: one llama.cpp slot, `LLM_CONTEXT_SIZE` 8192. GPU sampled at 1 Hz throughout. 60 messages, no
+synthetic load and no replay — this is the real pipeline on the current build.
+
+| Measure | Value |
+| --- | --- |
+| Messages captured, classified, drafted | 60 / 60 / 60 |
+| First-pass errors | **0** (0 `error` events, 0 `skipped`, 0 `policy_reject`) |
+| Capture to draft, first attempt | p50 3.03 s, p90 4.18 s, p95 4.87 s, p99 5.35 s, max 5.74 s (target: under 10 s) |
+| Classify stage alone | p50 2.63 s, p90 3.48 s, max 4.13 s |
+| Draft stage alone | 0 s for 46 of 60; p90 1.57 s, max 2.32 s for the 14 that drafted |
+| Groups | fyi 26, likely_noise 22, needs_decision 10, reply_suggested 2 |
+| Drafts with reply text / proposed actions | 11 / none 53, label 5, archive 2 |
+| GPU power | 13.7 W idle with the model resident, 142.2 W mean under load, 170.9 W peak |
+| GPU utilisation under load | 84% mean |
+| VRAM | 4,909 MB peak of 12,288 MB |
+| Wall clock per run | 66-73 s for 20 messages, about 3.5 s each including the Gmail fetch |
+
+Two things this settles. **Latency is not a constraint**: the worst message in 60 finished at 5.74 s
+against a 10 s target, and the distribution is tight — p50 to max spans 2.7 s. **The 6.1 % first-pass
+classification failure rate recorded on 2026-09-30 was an artefact of that day's bring-up**, not a
+property of the build: the three fixes it provoked (`d358027`, `16fe9be`, `a2e3a41`) landed 16:47-17:09 UTC,
+the two runs after them had zero errors, and this batch adds 60 more consecutive clean messages. 60 of 60
+bounds the current rate below roughly 5 % at 95 % confidence; it does not prove zero.
+
+Per message the pipeline makes one classify call and, for 14 of 60, one draft call. `likely_noise` never
+drafts and `needs_decision` always does. So the LLM cost of triage is close to one structured completion
+per message, which is why a 20-message run takes about a minute and why concurrency has little to offer
+at this volume — the box was idle between runs, not saturated.
+
+### The cap was silently losing mail
+
+All three runs returned `capped: true`. Investigating that on 2026-10-06 found a real defect, not a
+queue that would drain on its own.
+
+`JARVIS_GMAIL_QUERY` was `in:inbox newer_than:1d` and the cap was 20. The inbox takes **~171
+messages/day** (1,160 over 7 days), so no run could ever finish its window: `capped` latched, and
+`_next_since` held the watermark to preserve a backlog it had no power to preserve. The query's
+`newer_than:1d` is tighter than the `after:` the poller derives from `since`, so Gmail returned the
+same 171 ids either way — the watermark was inert. Mail a capped run left behind simply aged past
+`newer_than:1d` and became unreachable. 969 of the last 7 days' messages were unseen against 124 of
+the last 1 day, so roughly **845 messages were never triaged and cannot now be found by this query**.
+
+Two changes:
+
+- `JARVIS_GMAIL_QUERY` is now `in:inbox newer_than:1d category:primary` and the cap is back to its 50
+  default. One day of `category:primary` is ~12 messages against a cap of 50, so a run completes
+  uncapped and the window actually advances. One day by category, measured 2026-10-06: promotions 51,
+  updates 92, forums 13, primary 12, social 1. **The cap and the query are one lever** — widening the
+  query without raising the cap reintroduces the loss, which is why `.env.example` now says so beside
+  both.
+
+  The headroom is real rather than assumed: `category:primary` runs 12.4/day over the last 7 days and
+  9.7/day over 30, and the busiest single day in the last 14 was **15**, against a cap of 50. A
+  weekday spike would have to more than triple to re-enter the failure.
+- `GmailSource.poll` builds `after:` from one day *before* `since`. Gmail filters by date in the
+  account's timezone while `since` is a UTC instant, so flooring it to a UTC date could land a day late
+  and cut inside the requested window — just after midnight, `after:<today>` dropped all of yesterday
+  evening. The clause is now only ever a lower bound; `query` is where a tighter window belongs, and
+  `Store.exists()` absorbs the overlap. Covered by
+  `test_poll_window_is_never_narrower_than_the_caller_asked_for`.
+
+The ~845 skipped messages are not recoverable through this query. Most were `promotions` or `updates`
+and out of scope under the new one; nothing was deleted, and they remain in Gmail.
+
+**Every classification figure recorded above this line is drawn from the whole inbox, and is not
+comparable to anything measured after 2026-10-06.** `category:primary` is a different population:
+the 2026-10-05 batch was 22 of 60 `likely_noise`, which is largely what Gmail already files under
+promotions and updates. Expect the group mix to shift hard toward `needs_decision` and `fyi`, and do
+not read that as a model change. The Phase 2 quality gate — the correction rate — needs a fresh
+baseline taken under the new query; the pre-2026-10-06 numbers cannot serve as one.
+
 ## Not in this phase
 
 Sending or modifying mail, cloud models, scheduled polling, calendar sources, auth on the briefing or the chat endpoint, NAS storage. See `roadmap.md`. Phase 1.5 added chat, teaching notes, and read-only workstation documents; the rest of this list is unchanged.

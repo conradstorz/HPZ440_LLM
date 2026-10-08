@@ -16,6 +16,7 @@ from jarvis.draft import draft
 from jarvis.agent import Agent
 from jarvis.journal import Journal, JournalEvent
 from jarvis.notes import Notes
+from jarvis.obiwan_client import ObiwanClient
 from jarvis.policy import Policy
 from jarvis.retrieval import Index
 from jarvis.sources.base import Source
@@ -77,6 +78,12 @@ def _next_since(last: JournalEvent | None, now: datetime, settings: Settings) ->
     A run that hit the per-run cap or died mid-poll did not finish listing its window, so the watermark must not
     advance: GmailSource turns ``since`` into ``after:YYYY/MM/DD``, and advancing it would strand the backlog the
     capped run deliberately left behind.
+
+    Holding the watermark only preserves a backlog the *watermark* bounds. A ``gmail_query`` carrying its own time
+    filter (``newer_than:1d``) bounds the window independently and more tightly, so ``after:`` never binds and a
+    held watermark preserves nothing: whatever a capped run left behind ages out of the query window and is lost
+    for good. The cap must therefore exceed the query's daily volume -- see ``docs/jarvis.md``, which records what
+    happened when it did not.
     """
     if last is None:
         return now - timedelta(days=settings.initial_lookback_days)
@@ -172,6 +179,7 @@ class Runtime:
     llm: LlamaCppClient
     notes: Notes
     workspace: WorkspaceClient
+    knowledge: ObiwanClient
     tools: ToolRegistry
     agent: Agent
     sources: list[Source] = field(default_factory=list)
@@ -198,10 +206,11 @@ def build_runtime(settings: Settings | None = None, *, with_gmail: bool = True) 
     # The token is read per request, not here, so the app starts before jarvis-agent-token.ps1 has ever run.
     workspace = WorkspaceClient(s.workspace_agent_url, s.secrets_dir / "agent_token",
                                 max_document_bytes=s.max_document_bytes, max_pdf_pages=s.max_pdf_pages)
+    knowledge = ObiwanClient(s.obiwan_url, reader_token=s.obiwan_reader_token, writer_token=s.obiwan_writer_token)
     tools = build_registry(policy, journal, store=store, index=index, briefing=briefing, notes=notes,
-                           workspace=workspace, content_chars=s.content_chars)
+                           workspace=workspace, knowledge=knowledge, content_chars=s.content_chars)
     rt = Runtime(settings=s, store=store, journal=journal, policy=policy, index=index, briefing=briefing, llm=llm,
-                 notes=notes, workspace=workspace, tools=tools,
+                 notes=notes, workspace=workspace, knowledge=knowledge, tools=tools,
                  agent=Agent(llm, tools, notes, journal, context_tokens=s.context_tokens))
     if with_gmail:
         rt.sources.append(_LazyGmail(s, store))

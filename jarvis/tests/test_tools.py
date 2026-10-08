@@ -8,7 +8,7 @@ from jarvis.notes import Notes
 from jarvis.policy import ALLOWED, Policy
 from jarvis.retrieval import Index
 from jarvis.tools.registry import build_registry
-from tests.conftest import FakeWorkspace, classified, make_nko
+from tests.conftest import FakeKnowledge, FakeWorkspace, classified, make_nko
 
 
 @pytest.fixture
@@ -27,7 +27,8 @@ def world(data_dir, store):
                                        "rationale": "r", "model": "fake", "at": "t"}], status=NKOStatus.DRAFTED)
         store.save_version(n)
     ws = FakeWorkspace()
-    reg = build_registry(Policy(j), j, store=store, index=idx, briefing=b, notes=notes, workspace=ws, content_chars=50)
+    fk = FakeKnowledge()
+    reg = build_registry(Policy(j), j, store=store, index=idx, briefing=b, notes=notes, workspace=ws, knowledge=fk, content_chars=50)
     return reg, store, notes, ws, j
 
 
@@ -38,7 +39,7 @@ def run(reg, name, _context=None, **args):
 def test_registry_names(world):
     reg = world[0]
     assert reg.names() == ["search_mail", "get_message", "briefing", "correct", "list_notes", "propose_note", "confirm_note",
-                           "retire_note", "list_documents", "read_document"]
+                           "retire_note", "list_documents", "read_document", "search_knowledge", "relay_fact", "record_note"]
 
 
 def test_search_and_get(world):

@@ -54,20 +54,28 @@ services:
     restart: unless-stopped
     depends_on:
       - llm-api
+      - obiwan
     ports:
       - "${JARVIS_HOST_PORT:-8090}:8090"
+    networks: [default, obiwan-net]
     environment:
       - JARVIS_DATA_DIR=/data
       - JARVIS_LLM_BASE_URL=http://llm-api:8080
       - JARVIS_LLM_MODEL=${LLM_MODEL_PATH:-/models/model.gguf}
       - JARVIS_GMAIL_ACCOUNT=${JARVIS_GMAIL_ACCOUNT:-}
-      - JARVIS_GMAIL_QUERY=${JARVIS_GMAIL_QUERY:-in:inbox}
+      # Bounded by default: `in:inbox` alone matches tens of thousands of messages, and a run capped at
+      # JARVIS_MAX_MESSAGES_PER_RUN would never reach the rest. See the note in .env.example.
+      - JARVIS_GMAIL_QUERY=${JARVIS_GMAIL_QUERY:-in:inbox newer_than:1d category:primary}
       - JARVIS_MAX_MESSAGES_PER_RUN=${JARVIS_MAX_MESSAGES_PER_RUN:-50}
       - JARVIS_WORKSPACE_AGENT_URL=${JARVIS_WORKSPACE_AGENT_URL:-}
       - JARVIS_MAX_DOCUMENT_BYTES=${JARVIS_MAX_DOCUMENT_BYTES:-5000000}
       - JARVIS_MAX_PDF_PAGES=${JARVIS_MAX_PDF_PAGES:-20}
       # Same source as llama.cpp's --ctx-size above, so the agent's context budget cannot exceed the server's.
       - JARVIS_CONTEXT_TOKENS=${LLM_CONTEXT_SIZE:-4096}
+      # Obi-Wan: reader and writer credentials only. The commander credential is deliberately absent (D4, S7).
+      - JARVIS_OBIWAN_URL=http://obiwan:8070
+      - JARVIS_OBIWAN_READER_TOKEN=${OBIWAN_READER_TOKEN:-}
+      - JARVIS_OBIWAN_WRITER_TOKEN=${OBIWAN_WRITER_TOKEN:-}
     volumes:
       - "${HOST_JARVIS_DATA_DIR:-/srv/llm/jarvis-data}:/data"
     healthcheck:
@@ -77,5 +85,35 @@ services:
       retries: 10
       start_period: 20s
 
+  obiwan:
+    build: ./obiwan
+    restart: unless-stopped
+    # S5: no egress and no published route. obiwan sits only on an internal network; Jarvis reaches it there,
+    # operators use docker compose exec.
+    networks: [obiwan-net]
+    environment:
+      - OBIWAN_DATA_DIR=/data
+      - OBIWAN_INBOX_DIR=/inbox
+      # name=path;name=path. Add a NAS share here later; no code change (decision 7).
+      - OBIWAN_SOURCE_ROOTS=corpus=/sources/corpus
+      - OBIWAN_READER_TOKEN=${OBIWAN_READER_TOKEN:-}
+      - OBIWAN_WRITER_TOKEN=${OBIWAN_WRITER_TOKEN:-}
+      - OBIWAN_COMMANDER_TOKEN=${OBIWAN_COMMANDER_TOKEN:-}
+    volumes:
+      - "${HOST_OBIWAN_DIR:-/srv/obiwan}/data:/data"
+      - "${HOST_OBIWAN_DIR:-/srv/obiwan}/inbox:/inbox"
+      # S8: every source root is read-only at the mount, so a code defect cannot write one.
+      - "${HOST_OBIWAN_DIR:-/srv/obiwan}/corpus:/sources/corpus:ro"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8070/health', timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
 volumes:
   open-webui-data:
+
+networks:
+  obiwan-net:
+    internal: true

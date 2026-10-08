@@ -88,7 +88,7 @@ def test_unknown_tool_is_rejected_and_loop_continues(data_dir):
 
 def test_transcript_trimming_keeps_system_and_last_user(data_dir):
     llm = FakeLLM(turns=[ChatTurn(content="ok")])
-    agent, _ = _agent(data_dir, llm, context_tokens=600, reply_tokens=100)
+    agent, _ = _agent(data_dir, llm, context_tokens=740, reply_tokens=100)
     msgs = [{"role": "user", "content": "old " * 300}, {"role": "assistant", "content": "older reply " * 100},
             {"role": "user", "content": "the real question"}]
     "".join(agent.respond(msgs))
@@ -139,11 +139,11 @@ def test_oversized_tool_result_is_truncated_when_nothing_can_be_dropped(data_dir
                parameters={"type": "object", "properties": {}, "required": []})
     llm = FakeLLM(turns=[ChatTurn(content="", tool_calls=[ToolCall(id="c1", name="dump", arguments={})], finish_reason="tool_calls"),
                          ChatTurn(content="ok")])
-    agent, _ = _agent(data_dir, llm, extra=[big], context_tokens=700, reply_tokens=100)
+    agent, _ = _agent(data_dir, llm, extra=[big], context_tokens=840, reply_tokens=100)
     assert "".join(agent.respond([{"role": "user", "content": "dump it"}])) == "ok"
     tool_msg = llm.chat_calls[1]["messages"][-1]
     assert tool_msg["role"] == "tool" and tool_msg["content"].endswith("[truncated]")
-    assert _total(llm.chat_calls[1]) <= (700 - 100) * CHARS_PER_TOKEN
+    assert _total(llm.chat_calls[1]) <= (840 - 100) * CHARS_PER_TOKEN
 
 
 def test_tool_result_cannot_make_a_note_explicit(data_dir):

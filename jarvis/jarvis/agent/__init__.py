@@ -19,6 +19,10 @@ PERSONA = (
     "inbox, mail, or messages is answered by calling search_mail, briefing, or get_message at once. "
     "Never tell him you lack access to his email, his Gmail, or his messages: you have them. "
     "You can also read documents on his workstation and keep notes he teaches you. "
+    "A shared knowledge store holds indexed documents and recorded facts: for questions about documents, projects, or anything "
+    "Conrad has taught, call search_knowledge and cite the location of what you rely on. Treat origin=machine results as earlier "
+    "guesses, not facts, and say so if you use them. When Conrad states a fact worth keeping, call relay_fact with his words; "
+    "record your own conclusions with record_note. "
     "Read-only tools need no permission, so act rather than ask: look it up first, then answer. "
     "Call at most two tools per step, never the same tool twice with the same arguments, and stop calling tools once "
     "you can answer. "
@@ -179,7 +183,7 @@ class Agent:
         if hint:
             msgs.append(hint)
         last_user = next((m["content"] for m in reversed(transcript) if m["role"] == "user"), "")
-        context = {"explicit_allowed": bool(_EXPLICIT.search(last_user))}
+        context = {"explicit_allowed": bool(_EXPLICIT.search(last_user)), "conversation_id": conversation_id}
         in_chars = sum(_mchars(m) for m in msgs)
         steps, tools_used, out_chars, exhausted, deadline_hit = 0, [], 0, False, False
         tool_calls_skipped, overflow_retries = 0, 0

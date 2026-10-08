@@ -9,7 +9,7 @@ import logging
 import re
 import time
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import getaddresses, parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -253,7 +253,14 @@ class GmailSource:
         self._account, self._query, self._max = account, query, max_attachment_bytes
 
     def poll(self, since: datetime) -> Iterator[NKO]:
-        query = f"{self._query} after:{since.astimezone(UTC).strftime('%Y/%m/%d')}"
+        # ``after:`` is day-granular and Gmail evaluates it in the account's timezone, while ``since`` is an
+        # instant in UTC. Flooring that instant to its UTC date can land up to a day later than the caller
+        # meant and silently exclude mail inside the requested window -- worst just after midnight, where
+        # after:<today> drops all of yesterday evening. Step back a day so the clause is only ever a safe
+        # lower bound; any narrower bound the caller wants belongs in ``query``, and Store.exists() discards
+        # the overlap for free.
+        day = (since.astimezone(UTC) - timedelta(days=1)).strftime("%Y/%m/%d")
+        query = f"{self._query} after:{day}"
         for mid in self._api.list_ids(query):
             key = _dedup_key(self._account, mid)
             if self._store.exists(key):

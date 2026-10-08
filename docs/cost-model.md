@@ -96,30 +96,36 @@ with the slot count chosen in production.
 | Together AI meta-llama/Meta-Llama-3.1-8B-Instruct | 720 | $28.91 | $0.1800 | 160.6 | 123,526 |
 | DeepInfra meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo | 720 | $28.91 | $0.0246 | 1174.3 | 903,284 |
 
-The headline, stated plainly: at Jarvis's actual load — roughly a couple of hundred emails a
-month, call it 200 requests — the box does not win on price, by a wide margin. 200 requests at
-the 1000/300 mix is 0.26 mixed Mtok/month, against a break-even of 60.0 Mmix/month for
-Together AI at the 30 active-hours-a-month row. Among the rows this table models, 30 h/month is
-the **most favorable to owning the box**: load watts exceed idle watts (168.07 vs. 13.66 —
-`bench/bench/cost.py`), so monthly cost rises with active hours, and 30 h/month is the
-lowest activity level this table models. At that row, the box would need to run roughly
-**230x** its actual Jarvis volume before owning it beats renting from Together.
+The headline, stated plainly: at Jarvis's actual load the box does not win on price, by a wide
+margin. That load, measured rather than guessed (2026-10-06): the configured Gmail query
+`in:inbox newer_than:1d category:primary` matches about **12 messages/day**, so ~360/month, and
+each message costs one classify completion plus — for 14 of the 60 messages in the 2026-10-05
+batch — one draft completion, giving **~444 requests/month**. At the 1000/300 mix that is
+**0.577 mixed Mtok/month**, against a break-even of 60.0 Mmix/month for Together AI at the 30
+active-hours-a-month row. Among the rows this table models, 30 h/month is the **most favorable
+to owning the box**: load watts exceed idle watts (168.07 vs. 13.66 — `bench/bench/cost.py`), so
+monthly cost rises with active hours, and 30 h/month is the lowest activity level this table
+models.
 
-Jarvis's real duty cycle is in fact well below even 30 active hours/month — 200 requests at the
-8-slot median latency of 16.4 s is about **0.91 active hours/month**. Because
-`monthly_cost_of_ownership` is strictly *increasing* in active hours (load watts exceed idle
-watts), a lower real activity level means a **lower** monthly cost and a **lower** break-even
-volume, not a larger one — 230x is not a floor. At Jarvis's actual ~0.91 h/month: monthly cost
-≈ **$10.03** (versus $10.79 at the 30 h row), break-even ≈ **55.7 Mmix/month** (versus 60.0),
-and the required multiple against 0.26 Mmix/month is roughly **214x** — slightly *smaller* than
-the 230x figure at the 30 h row, not larger. That difference does not change the conclusion: the
-gap between owning and renting is two to three orders of magnitude either way, regardless of
-which modelled row, or Jarvis's real and lower one, is used for the comparison.
+Jarvis's real duty cycle is far below even 30 active hours/month. GPU telemetry over the
+2026-10-05 batch recorded 173 busy seconds for 60 messages, so 360 messages/month is about
+**0.29 active hours/month**. Because `monthly_cost_of_ownership` is strictly *increasing* in
+active hours (load watts exceed idle watts), a lower real activity level means a **lower**
+monthly cost and a **lower** break-even volume, not a larger one. At ~0.29 h/month: monthly cost
+≈ **$10.01**, break-even ≈ **55.6 Mmix/month** (42,790 requests/month), and the required
+multiple against 0.577 Mmix/month is roughly **96x**.
 
-Against DeepInfra's $0.02/$0.04 pricing the gap is worse: at the same 30 active-hours-a-month
-row, break-even is 438.5 Mmix/month, roughly **1,690x** actual load. Owning this GPU is not the
-cheaper way to run triage at this household's volume under either hosted comparison. The reasons
-the box exists anyway are not dollar reasons — see "What this does not say" below.
+Against DeepInfra's $0.02/$0.04 pricing the gap is worse: break-even ≈ 406.8 Mmix/month
+(312,903 requests/month), roughly **705x** actual load. Owning this GPU is not the cheaper way
+to run triage at this household's volume under either hosted comparison. The reasons the box
+exists anyway are not dollar reasons — see "What this does not say" below.
+
+Scope is the one lever that moves this materially, and not far enough. The full inbox, not just
+`category:primary`, takes ~171 messages/day — 5,130/month, ~6,327 requests, **8.23
+Mmix/month** at 4.11 active h/month, so $10.11 to own and a break-even of 56.2 Mmix. Triaging
+all of it would still leave the box roughly **7x** short of break-even against Together and
+**50x** short against DeepInfra. Two orders of magnitude became one; the conclusion is
+unchanged.
 
 The break-even figure is more legible per day than per month, and one sanity check makes the
 table honest about which of its rows are physically coherent. Together AI's 30 h/month
@@ -133,11 +139,11 @@ The 720 h/month row is also physically reachable, just not in a way relevant to 
 flat out, the box could produce roughly 145.7 tok/s x 720 h of decode, which works out to about
 **1,636 mixed Mtok/month** of capacity — above DeepInfra's 720 h break-even of 1,174.3 Mmix, so
 at full saturation the box would in fact win against DeepInfra on price. That comparison is
-irrelevant here: Jarvis's real load is 0.26 Mmix/month, four orders of magnitude below that
-saturation capacity. The four `hours_active` rows in the table above are a sensitivity axis over
-an assumption, not four scenarios Jarvis might land in — only the 30 h row sits anywhere near a
-volume this model would actually produce, and even that is ~230x above Jarvis's real ~0.26
-Mmix/month.
+irrelevant here: Jarvis's real load is 0.577 Mmix/month, more than three orders of magnitude
+below that saturation capacity. The four `hours_active` rows in the table above are a sensitivity
+axis over an assumption, not four scenarios Jarvis might land in — only the 30 h row sits
+anywhere near a volume this model would actually produce, and even that is ~104x above Jarvis's
+real ~0.577 Mmix/month.
 
 ## Hardware comparison
 
