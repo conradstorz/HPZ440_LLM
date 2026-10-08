@@ -52,15 +52,15 @@ def knowledge_tools(knowledge: Knowledge, journal: Journal, *, content_chars: in
         out, base = _call("obiwan_search", "reader", lambda: knowledge.search(query, k), context=_context, query=query[:200], k=k)
         results, cov = out.get("results", []), out.get("coverage", {})
         journal.append(JournalEvent.new("obiwan_search", payload={**base, "ok": True, "results": len(results), "complete": bool(cov.get("complete"))}))
-        lines = [_coverage_line(cov)]
+        lines = [_coverage_line(cov), FOOTER]
         if not results:
             lines.append("no matches")
             return "\n".join(lines)
+        cap = min(content_chars, 500)
         for r in results:
             tag = f"origin={r.get('origin', '?')}" + (f"/{r['attestation']}" if r.get("attestation") else "")
             lines.append(f"[{tag}] {r.get('location', '?')} v{r.get('version_no', '?')} chunk {r.get('seq', '?')} ({r.get('chunk_id', '?')}): "
-                         f"{str(r.get('content', ''))[:content_chars]}")
-        lines.append(FOOTER)
+                         f"{str(r.get('content', ''))[:cap]}")
         return "\n".join(lines)
 
     def relay_fact(text: str, _context: dict | None = None) -> str:
@@ -78,7 +78,7 @@ def knowledge_tools(knowledge: Knowledge, journal: Journal, *, content_chars: in
     obj = {"type": "object"}
     return [
         Tool(name="search_knowledge", description="Search the shared knowledge store (documents, notes, facts Conrad taught). Returns candidate passages with their origin and source location, plus how complete the index is. You judge relevance; cite the location.",
-             action="obiwan_search", handler=search_knowledge, wants_context=True,
+             action="obiwan_search", handler=search_knowledge, wants_context=True, result_chars=12000,
              parameters={**obj, "properties": {"query": {"type": "string"}, "k": {"type": "integer", "minimum": 1, "maximum": K_MAX}}, "required": ["query"]}),
         Tool(name="relay_fact", description="Record something Conrad just stated as fact, in his words. It is stored as human/relayed (unconfirmed) and he can confirm it himself later.",
              action="obiwan_submit", handler=relay_fact, wants_context=True,

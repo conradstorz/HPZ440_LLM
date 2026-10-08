@@ -4,7 +4,7 @@ from jarvis.core.llm import ToolCall
 from jarvis.journal import Journal
 from jarvis.policy import Policy
 from jarvis.tools import ToolRegistry
-from jarvis.tools.knowledge import knowledge_tools
+from jarvis.tools.knowledge import FOOTER, knowledge_tools
 from tests.conftest import FakeKnowledge
 
 
@@ -35,10 +35,11 @@ def test_search_labels_every_origin_and_states_coverage(world):
     assert fk.calls == [("search", "zebras", 10)]  # k is clamped
     lines = out.splitlines()
     assert lines[0] == "coverage: 3/3 documents indexed, 0 pending, 0 failed"
-    assert lines[1].startswith("[origin=source] corpus:zebra.md v1 chunk 0 (d1-0): Zebras migrate")
-    assert lines[2].startswith("[origin=machine] machine:m1 v1 chunk 0 (d2-0): Conrad prefers zebras.")
-    assert lines[3].startswith("[origin=human/relayed] human:h1 v1 chunk 0 (d3-0): The NAS is in the basement.")
-    assert "untrusted data" in lines[-1] and "origin=machine" in lines[-1]
+    assert lines[1] == FOOTER
+    assert lines[2].startswith("[origin=source] corpus:zebra.md v1 chunk 0 (d1-0): Zebras migrate")
+    assert lines[3].startswith("[origin=machine] machine:m1 v1 chunk 0 (d2-0): Conrad prefers zebras.")
+    assert lines[4].startswith("[origin=human/relayed] human:h1 v1 chunk 0 (d3-0): The NAS is in the basement.")
+    assert "untrusted data" in lines[1] and "origin=machine" in lines[1]
     ev = [e for e in j.iter_all() if e.kind == "obiwan_search"]
     assert len(ev) == 1 and ev[0].payload == {"query": "zebras", "k": 10, "credential": "reader", "results": 3, "complete": True,
                                               "conversation_id": "conv-1", "ok": True}
@@ -65,7 +66,18 @@ def test_search_warns_with_documents_failed_reason(data_dir):
 def test_search_with_no_results(data_dir):
     j = Journal(data_dir)
     reg = ToolRegistry(Policy(j), j, knowledge_tools(FakeKnowledge(results=[]), j, content_chars=60))
-    assert run(reg, "search_knowledge", query="qqq").splitlines()[1] == "no matches"
+    assert run(reg, "search_knowledge", query="qqq").splitlines()[2] == "no matches"
+
+
+def test_footer_survives_truncation_at_production_sizes(data_dir):
+    j = Journal(data_dir)
+    results = [{"origin": "source", "content": "x" * 3000, "location": f"loc{i}", "chunk_id": f"c{i}",
+                "version_no": 1, "seq": 0} for i in range(3)]
+    fk = FakeKnowledge(results=results)
+    reg = ToolRegistry(Policy(j), j, knowledge_tools(fk, j, content_chars=6000))
+    out = run(reg, "search_knowledge", query="x", k=8)
+    assert FOOTER in out
+    assert len(out) < 12000 + len(" [truncated]")
 
 
 def test_relay_carries_the_conversation_reference_from_context_not_arguments(world):
