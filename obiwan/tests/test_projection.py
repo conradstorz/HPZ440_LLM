@@ -56,7 +56,7 @@ def test_retire_subject_removes_it_from_search_and_marks_stale(world):
     r.add_tombstone(subject_id="m1", reason="wrong", ordered_by="commander", created_at=T0)
     p.retire_subject("m1", reason="forgotten", now=T0)
     assert p.search("zebras", k=5) == []
-    assert r.conn.execute("SELECT state, reason FROM projection WHERE chunk_id = ?", (chunks[0].chunk_id,)).fetchone() == ("stale", "forgotten")
+    assert tuple(r.conn.execute("SELECT state, reason FROM projection WHERE chunk_id = ?", (chunks[0].chunk_id,)).fetchone()) == ("stale", "forgotten")
 
 
 def test_rebuild_from_the_record_restores_identical_results_without_touching_sources(world, data_dir):
