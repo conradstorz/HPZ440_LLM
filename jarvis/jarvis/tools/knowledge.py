@@ -26,35 +26,42 @@ def _coverage_line(cov: dict) -> str:
 
 
 def knowledge_tools(knowledge: Knowledge, journal: Journal, *, content_chars: int) -> list[Tool]:
+    def _call(kind: str, credential: str, fn, *, context: dict | None, **fields):
+        """Run one Obi-Wan call and journal it under `kind` whether it succeeds or fails (S9)."""
+        base = {"credential": credential, "conversation_id": (context or {}).get("conversation_id"), **fields}
+        try:
+            out = fn()
+        except Exception as e:
+            journal.append(JournalEvent.new(kind, payload={**base, "ok": False, "error": f"{type(e).__name__}: {e}"[:300]}))
+            raise
+        return out, base
+
     def search_knowledge(query: str, k: int = 8, _context: dict | None = None) -> str:
         k = max(1, min(int(k), K_MAX))
-        out = knowledge.search(query, k)
+        out, base = _call("obiwan_search", "reader", lambda: knowledge.search(query, k), context=_context, query=query[:200], k=k)
         results, cov = out.get("results", []), out.get("coverage", {})
-        journal.append(JournalEvent.new("obiwan_search", payload={"query": query[:200], "k": k, "credential": "reader",
-                                                                 "results": len(results), "complete": bool(cov.get("complete")),
-                                                                 "conversation_id": (_context or {}).get("conversation_id")}))
+        journal.append(JournalEvent.new("obiwan_search", payload={**base, "ok": True, "results": len(results), "complete": bool(cov.get("complete"))}))
         lines = [_coverage_line(cov)]
         if not results:
             lines.append("no matches")
             return "\n".join(lines)
         for r in results:
-            tag = f"origin={r['origin']}" + (f"/{r['attestation']}" if r.get("attestation") else "")
-            lines.append(f"[{tag}] {r['location']} v{r['version_no']} chunk {r['seq']} ({r['chunk_id']}): {r['content'][:content_chars]}")
+            tag = f"origin={r.get('origin', '?')}" + (f"/{r['attestation']}" if r.get("attestation") else "")
+            lines.append(f"[{tag}] {r.get('location', '?')} v{r.get('version_no', '?')} chunk {r.get('seq', '?')} ({r.get('chunk_id', '?')}): "
+                         f"{str(r.get('content', ''))[:content_chars]}")
         lines.append(FOOTER)
         return "\n".join(lines)
 
     def relay_fact(text: str, _context: dict | None = None) -> str:
         ref = (_context or {}).get("conversation_id") or "unknown-conversation"
-        out = knowledge.relay(text, ref)
-        journal.append(JournalEvent.new("obiwan_submit", payload={"route": "relay", "credential": "writer", "subject_id": out.get("subject_id"),
-                                                                 "doc_id": out.get("doc_id"), "conversation_id": (_context or {}).get("conversation_id")}))
+        out, base = _call("obiwan_submit", "writer", lambda: knowledge.relay(text, ref), context=_context, route="relay")
+        journal.append(JournalEvent.new("obiwan_submit", payload={**base, "ok": True, "subject_id": out.get("subject_id"), "doc_id": out.get("doc_id")}))
         return (f"recorded as human/relayed, subject {out.get('subject_id')}. "
                 f"Conrad can confirm it later with: obiwan confirm {out.get('subject_id')}")
 
     def record_note(text: str, _context: dict | None = None) -> str:
-        out = knowledge.submit(text)
-        journal.append(JournalEvent.new("obiwan_submit", payload={"route": "submit", "credential": "writer", "subject_id": out.get("subject_id"),
-                                                                 "doc_id": out.get("doc_id"), "conversation_id": (_context or {}).get("conversation_id")}))
+        out, base = _call("obiwan_submit", "writer", lambda: knowledge.submit(text), context=_context, route="submit")
+        journal.append(JournalEvent.new("obiwan_submit", payload={**base, "ok": True, "subject_id": out.get("subject_id"), "doc_id": out.get("doc_id")}))
         return f"recorded as machine knowledge, subject {out.get('subject_id')}"
 
     obj = {"type": "object"}
