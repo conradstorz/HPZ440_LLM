@@ -90,10 +90,15 @@ def test_reindex_and_scan_lock(client, monkeypatch):
     client.post("/scan", headers=W)
     r = client.post("/reindex", headers=W)
     assert r.status_code == 200 and r.json()["chunks_indexed"] >= 3
-    import obiwan.web as web
-    lock = web._scan_locks[id(client.app)]
+    lock = client.app.state.scan_lock
     assert lock.acquire(blocking=False)
     try:
         assert client.post("/scan", headers=W).status_code == 409
     finally:
         lock.release()
+
+
+def test_a_non_object_body_is_400_not_422(client):
+    assert client.post("/submit", json=[1, 2, 3], headers=W).status_code == 400
+    assert client.post("/relay", json="text", headers=W).status_code == 400
+    assert client.post("/confirm", json=[], headers=C).status_code == 400

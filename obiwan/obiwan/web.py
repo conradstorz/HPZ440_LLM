@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -11,8 +11,6 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from obiwan.auth import Refused
 from obiwan.service import Service
-
-_scan_locks: dict[int, threading.Lock] = {}
 
 
 class SubmitBody(BaseModel):
@@ -42,9 +40,15 @@ def _parse(model, body: dict):
         raise HTTPException(400, e.errors(include_url=False, include_input=False)) from e
 
 
+def _object(body: Any) -> dict:
+    if not isinstance(body, dict):
+        raise HTTPException(400, "body must be a JSON object")
+    return body
+
+
 def create_app(service: Service) -> FastAPI:
     app = FastAPI(title="Obi-Wan", docs_url=None, redoc_url=None)
-    _scan_locks[id(app)] = threading.Lock()
+    app.state.scan_lock = threading.Lock()
 
     def guard(power: str):
         def dep(authorization: str | None = Header(default=None)) -> str:
@@ -85,7 +89,8 @@ def create_app(service: Service) -> FastAPI:
         return service.journal(limit=max(1, min(limit, 500)))
 
     @app.post("/submit")
-    def submit(body: dict = Body(default_factory=dict), role: str = Depends(guard("submit"))) -> dict:
+    def submit(body: Any = Body(default_factory=dict), role: str = Depends(guard("submit"))) -> dict:
+        body = _object(body)
         checked(body, role=role, route="submit")
         p = _parse(SubmitBody, body)
         try:
@@ -94,7 +99,8 @@ def create_app(service: Service) -> FastAPI:
             raise HTTPException(400, str(e)) from e
 
     @app.post("/relay")
-    def relay(body: dict = Body(default_factory=dict), role: str = Depends(guard("relay"))) -> dict:
+    def relay(body: Any = Body(default_factory=dict), role: str = Depends(guard("relay"))) -> dict:
+        body = _object(body)
         checked(body, role=role, route="relay")
         p = _parse(RelayBody, body)
         try:
@@ -103,8 +109,9 @@ def create_app(service: Service) -> FastAPI:
             raise HTTPException(400, str(e)) from e
 
     @app.post("/confirm")
-    def confirm(body: dict = Body(default_factory=dict), role: str = Depends(guard("confirm")),
+    def confirm(body: Any = Body(default_factory=dict), role: str = Depends(guard("confirm")),
                 authorization: str | None = Header(default=None)) -> dict:
+        body = _object(body)
         checked(body, role=role, route="confirm")
         p = _parse(ConfirmBody, body)
         try:
@@ -121,7 +128,7 @@ def create_app(service: Service) -> FastAPI:
 
     @app.post("/scan")
     def scan(role: str = Depends(guard("scan"))) -> dict:
-        lock = _scan_locks[id(app)]
+        lock = app.state.scan_lock
         if not lock.acquire(blocking=False):
             raise HTTPException(409, "a scan is already in progress")
         try:
