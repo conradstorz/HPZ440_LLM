@@ -1,5 +1,8 @@
 """Discovery and identity (mvp.md sections 4 and 12). The path is an attribute; file_id is identity; a new hash for a
-known file_id is a new version. Source roots are only ever read."""
+known file_id is a new version. Source roots are only ever read.
+
+A known path is resolved by path before hash, so if two files exchange contents between scans each file_id's
+version chain silently acquires the other's content; the move rule never runs for a path the record already knows."""
 
 from __future__ import annotations
 
@@ -30,17 +33,27 @@ class RootReport(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
-def discover(root_path: Path, *, max_file_bytes: int) -> tuple[list[Path], int, int]:
-    """Supported, size-bounded regular files under the root, sorted for determinism. Raises OSError if the root cannot be listed."""
-    paths, unsupported, large = [], 0, 0
-    for p in sorted(x for x in root_path.rglob("*") if x.is_file()):
-        if not is_supported(p):
-            unsupported += 1
-        elif p.stat().st_size > max_file_bytes:
+def discover(root_path: Path, *, max_file_bytes: int) -> tuple[list[tuple[Path, int]], int, int, list[str]]:
+    """Supported, size-bounded regular files under the root, sorted for determinism, paired with their size.
+    Raises OSError if the root itself cannot be listed. A per-file stat failure (including the is_file() check)
+    is caught, recorded in the returned errors, and that file is skipped rather than aborting the whole root."""
+    paths, unsupported, large, errors = [], 0, 0, []
+    for x in sorted(root_path.rglob("*")):
+        try:
+            if not x.is_file():
+                continue
+            if not is_supported(x):
+                unsupported += 1
+                continue
+            size = x.stat().st_size
+        except OSError as e:
+            errors.append(f"{x.relative_to(root_path).as_posix()}: {type(e).__name__}: {e}")
+            continue
+        if size > max_file_bytes:
             large += 1
         else:
-            paths.append(p)
-    return paths, unsupported, large
+            paths.append((x, size))
+    return paths, unsupported, large, errors
 
 
 def _resolve(record: Record, work: WorkQueue, *, name: str, rel: str, digest: str, size: int, mtime: str, media_type: str,
@@ -63,7 +76,11 @@ def _resolve(record: Record, work: WorkQueue, *, name: str, rel: str, digest: st
         last = record.latest_sighting(fid)
         if last is not None and last.root == name and last.path not in on_disk:
             movers.append(fid)
-    if len(movers) == 1:
+    if movers:
+        # All candidates are byte-identical and have all left their old paths, so any assignment preserves every
+        # identity: take the one with the oldest latest-sighting (file_ids_with_hash orders by sighting id). Once
+        # this path claims it, that file's latest sighting is on disk, so the next ambiguous path resolves to the
+        # next remaining mover.
         record.add_sighting(file_id=movers[0], **sighting)
         return "moved"
     # Two files with identical content at two paths are two files, with the duplication noted rather than resolved.
@@ -84,23 +101,24 @@ def scan_root(name: str, root_path: Path, *, record: Record, work: WorkQueue, sc
         report.error = "root not reachable"
         return report  # S11: a gap, reported. Nothing is marked deleted because a mount was absent.
     try:
-        paths, report.skipped_unsupported, report.skipped_large = discover(root_path, max_file_bytes=max_file_bytes)
+        paths, report.skipped_unsupported, report.skipped_large, errors = discover(root_path, max_file_bytes=max_file_bytes)
     except OSError as e:
         report.error = f"{type(e).__name__}: {e}"
         return report
     report.reachable = True
-    on_disk = {p.relative_to(root_path).as_posix() for p in paths}
-    for p in paths:
+    report.errors.extend(errors)
+    on_disk = {p.relative_to(root_path).as_posix() for p, _size in paths}
+    for p, size in paths:
         rel = p.relative_to(root_path).as_posix()
         try:
             st = p.stat()
             digest = sha256_file(p)
         except OSError as e:  # vanished mid-scan: skip it this time, the record is untouched
-            report.errors.append(f"{rel}: {type(e).__name__}")
+            report.errors.append(f"{rel}: {type(e).__name__}: {e}")
             continue
         mtime = datetime.fromtimestamp(st.st_mtime, tz=UTC).isoformat()
         with record.transaction():
-            outcome = _resolve(record, work, name=name, rel=rel, digest=digest, size=st.st_size, mtime=mtime,
+            outcome = _resolve(record, work, name=name, rel=rel, digest=digest, size=size, mtime=mtime,
                                media_type=media_type_for(p), on_disk=on_disk, scan_id=scan_id, now=now)
         report.seen += 1
         setattr(report, outcome, getattr(report, outcome) + 1)

@@ -1,5 +1,6 @@
 import shutil
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -117,3 +118,36 @@ def test_files_over_the_size_limit_are_skipped_and_counted(world, corpus):
     (corpus / "big.txt").write_text("x" * 5000, encoding="utf-8")
     rep = scan_root("corpus", corpus, record=r, work=w, scan_id="s1", now=T0, max_file_bytes=4000)
     assert rep.skipped_large == 1 and rep.new == 3
+
+
+def test_a_file_that_cannot_be_stat_ed_is_skipped_not_the_whole_root(world, corpus, monkeypatch):
+    r, w = world
+    real_stat = Path.stat
+
+    def flaky_stat(self, *args, **kwargs):
+        if self.name == "invoice.txt":
+            raise PermissionError(13, "simulated transient failure")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+    rep = _scan(world, corpus, "s1")
+    assert rep.reachable is True and rep.new == 2
+    assert rep.errors and rep.errors[0].startswith("invoice.txt: PermissionError")
+    assert len(rep.errors) == 1
+    assert len(r.latest_documents()) == 2
+
+
+def test_two_identical_files_moved_together_both_keep_their_identity(world, corpus):
+    r, w = world
+    shutil.copyfile(corpus / "zebra.md", corpus / "zebra-copy.md")
+    _scan(world, corpus, "s1")
+    ids_before = {r.latest_sighting(d.subject_id).path: d.subject_id for d in r.latest_documents()}
+    (corpus / "archive").mkdir()
+    (corpus / "zebra.md").rename(corpus / "archive" / "zebra.md")
+    (corpus / "zebra-copy.md").rename(corpus / "archive" / "zebra-copy.md")
+    rep = _scan(world, corpus, "s2")
+    assert (rep.moved, rep.new, rep.duplicates) == (2, 0, 0)
+    assert len(r.latest_documents()) == 4
+    moved = {r.latest_sighting(d.subject_id).path for d in r.latest_documents()}
+    assert {"archive/zebra.md", "archive/zebra-copy.md"} <= moved
+    assert {ids_before["zebra.md"], ids_before["zebra-copy.md"]} == {d.subject_id for d in r.latest_documents() if r.latest_sighting(d.subject_id).path.startswith("archive/")}
