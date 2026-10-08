@@ -87,8 +87,13 @@ def test_relay_carries_the_conversation_reference_from_context_not_arguments(wor
     assert out == "recorded as human/relayed, subject h-new. Conrad can confirm it later with: obiwan confirm h-new"
     ev = [e for e in j.iter_all() if e.kind == "obiwan_submit"]
     assert ev[0].payload == {"route": "relay", "credential": "writer", "subject_id": "h-new", "doc_id": "d-new2", "conversation_id": "conv-1", "ok": True}
+    calls_before = list(fk.calls)
     out = run(reg, "relay_fact", text="x", _context={})
-    assert fk.calls[-1] == ("relay", "x", "unknown-conversation", None)
+    assert out == ("cannot relay: this chat carries no conversation id, so the fact would have no reference. "
+                   "Ask Conrad to confirm it directly with obiwan confirm, or retry from Open WebUI.")
+    assert fk.calls == calls_before  # no call to Obi-Wan was made
+    ev = [e for e in j.iter_all() if e.kind == "obiwan_submit"]
+    assert ev[-1].payload == {"ok": False, "route": "relay", "credential": "writer", "error": "no conversation id", "conversation_id": None}
 
 
 def test_record_note_is_machine(world):

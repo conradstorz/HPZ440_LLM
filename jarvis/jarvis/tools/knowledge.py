@@ -64,8 +64,13 @@ def knowledge_tools(knowledge: Knowledge, journal: Journal, *, content_chars: in
         return "\n".join(lines)
 
     def relay_fact(text: str, _context: dict | None = None) -> str:
-        ref = (_context or {}).get("conversation_id") or "unknown-conversation"
-        out, base = _call("obiwan_submit", "writer", lambda: knowledge.relay(text, ref), context=_context, route="relay")
+        conversation_id = (_context or {}).get("conversation_id")
+        if not conversation_id:
+            journal.append(JournalEvent.new("obiwan_submit", payload={"ok": False, "route": "relay", "credential": "writer",
+                                                                       "error": "no conversation id", "conversation_id": conversation_id}))
+            return ("cannot relay: this chat carries no conversation id, so the fact would have no reference. "
+                    "Ask Conrad to confirm it directly with obiwan confirm, or retry from Open WebUI.")
+        out, base = _call("obiwan_submit", "writer", lambda: knowledge.relay(text, conversation_id), context=_context, route="relay")
         journal.append(JournalEvent.new("obiwan_submit", payload={**base, "ok": True, "subject_id": out.get("subject_id"), "doc_id": out.get("doc_id")}))
         return (f"recorded as human/relayed, subject {out.get('subject_id')}. "
                 f"Conrad can confirm it later with: obiwan confirm {out.get('subject_id')}")
