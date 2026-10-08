@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Must match llama.cpp's --ctx-size; compose feeds both from LLM_CONTEXT_SIZE so they cannot diverge.
     context_tokens: int = 8192
     workspace_agent_url: str = ""
+    obiwan_url: str = ""
+    obiwan_reader_token: str = ""
+    obiwan_writer_token: str = ""
 
     @property
     def secrets_dir(self) -> Path:
