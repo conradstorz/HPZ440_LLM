@@ -97,8 +97,38 @@ def test_a_failed_move_leaves_the_file_pending_journals_it_and_continues(world, 
     monkeypatch.setattr(Path, "replace", flaky_replace)
     rep = process_inbox(box, record=r, projection=p, settings=settings, scan_id="s1", now=T0)
     assert (rep.recorded, rep.failed) == (1, 1)
-    assert (inbox_dir / "a.md").is_file()  # still pending, not quarantined
-    assert [d.title for d in r.latest_documents()] == ["b.md"]  # nothing of a.md reached the record
-    assert r.conn.execute("SELECT count(*) FROM files").fetchone()[0] == 1
-    ev = r.events(limit=5, kind="inbox_error")[0]
-    assert ev.payload["file"] == "a.md" and ev.payload["error"].startswith("OSError") and ev.payload["stayed_pending"] is True
+    assert (inbox_dir / "a.md").is_file()  # still pending at the top level, not quarantined
+    docs = r.latest_documents()
+    a_doc = next(d for d in docs if d.title == "a.md")
+    assert sorted(d.title for d in docs) == ["a.md", "b.md"]  # the record DOES have a.md now
+    assert r.latest_sighting(a_doc.subject_id).path == "processed/2026-10-07/a.md"
+    ev = r.events(limit=5, kind="inbox_move_failed")[0]
+    assert ev.payload["file"] == "a.md" and ev.payload["recorded_doc_id"] == a_doc.doc_id
+    assert ev.payload["destination"] == "processed/2026-10-07/a.md"
+    assert rep.failed == 1
+
+
+def test_an_interrupted_move_is_completed_on_the_next_scan(world, inbox_dir, settings, monkeypatch):
+    from pathlib import Path
+
+    r, p, box = world
+    (inbox_dir / "a.md").write_text("first zebra note\n", encoding="utf-8", newline="\n")
+    (inbox_dir / "b.md").write_text("second zebra note\n", encoding="utf-8", newline="\n")
+    real_replace = Path.replace
+
+    def flaky_replace(self, target):
+        if self.name == "a.md":
+            raise OSError(5, "simulated I/O error")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    process_inbox(box, record=r, projection=p, settings=settings, scan_id="s1", now=T0)
+    monkeypatch.undo()  # remove the flaky replace; the real Path.replace is restored
+
+    rep = process_inbox(box, record=r, projection=p, settings=settings, scan_id="s2", now=T0)
+    assert rep.recovered == 1
+    a_doc = next(d for d in r.latest_documents() if d.title == "a.md")
+    dest = inbox_dir / "processed" / "2026-10-07" / "a.md"
+    assert dest.is_file() and not (inbox_dir / "a.md").exists()
+    assert len(r.latest_documents()) == 2  # no new document was created, still exactly two
+    assert r.events(limit=1)[0].kind == "inbox_move_completed"

@@ -21,6 +21,7 @@ PARTIAL_SUFFIXES = {".tmp", ".part", ".crdownload"}
 class InboxReport(BaseModel):
     recorded: int = 0
     failed: int = 0
+    recovered: int = 0
     items: list[dict] = Field(default_factory=list)
 
 
@@ -63,7 +64,8 @@ class Inbox:
 
 def process_inbox(inbox: Inbox, *, record: Record, projection: FtsProjection, settings: Settings, scan_id: str,
                   now: datetime) -> InboxReport:
-    """Extract first, in memory; then record and move inside one transaction, so a failure leaves nothing partial."""
+    """Extract first, in memory; then commit the record, then move the file. If the move is interrupted after the
+    commit, the next scan detects it via the hash and finishes the move without creating a new record."""
     report = InboxReport()
     for p in inbox.pending():
         try:
@@ -73,6 +75,22 @@ def process_inbox(inbox: Inbox, *, record: Record, projection: FtsProjection, se
             if size > settings.max_file_bytes:
                 raise ExtractionError(f"file is {size} bytes, above the {settings.max_file_bytes} limit")
             digest = sha256_file(p)
+            recovered = False
+            for fid in record.file_ids_with_hash(digest):
+                s = record.latest_sighting(fid)
+                if s is not None and s.root == RESERVED_ROOT and not (inbox.path / s.path).exists():
+                    # An interrupted move: the record already has this file under its destination path, but
+                    # the move itself never completed (crash between commit and p.replace). Finish the move;
+                    # nothing new is recorded.
+                    (inbox.path / s.path).parent.mkdir(parents=True, exist_ok=True)
+                    p.replace(inbox.path / s.path)
+                    record.add_event("inbox_move_completed", payload={"file": p.name, "file_id": fid, "moved_to": s.path})
+                    report.recovered += 1
+                    report.items.append({"file": p.name, "outcome": "recovered", "moved_to": s.path})
+                    recovered = True
+                    break
+            if recovered:
+                continue
             text = extract_text(p, max_pdf_pages=settings.max_pdf_pages)
             specs = chunk_text(text, chunk_chars=settings.chunk_chars)
         except Exception as e:  # noqa: BLE001 - the reason goes beside the file, whatever it was
@@ -94,13 +112,21 @@ def process_inbox(inbox: Inbox, *, record: Record, projection: FtsProjection, se
                 doc = record.add_document(subject_id=file_id, origin="source", content_hash=digest, media_type=media_type_for(p),
                                           size=size, mtime=mtime, title=p.name, scan_id=scan_id, created_at=now)
                 chunks = record.add_chunks(doc.doc_id, specs)
-                p.replace(dest)  # inside the transaction: if the move fails, the record rolls back and the file stays pending
         except Exception as e:  # noqa: BLE001 - the file stays in the inbox as pending work; the reason is journaled
             message = f"{type(e).__name__}: {e}"[:1000]
             record.add_event("inbox_error", payload={"file": p.name, "error": message, "at": now.isoformat(), "scan_id": scan_id,
                                                      "stayed_pending": True})
             report.failed += 1
             report.items.append({"file": p.name, "outcome": "error", "error": message})
+            continue
+        try:
+            p.replace(dest)
+        except OSError as e:
+            message = f"{type(e).__name__}: {e}"[:1000]
+            record.add_event("inbox_move_failed", payload={"file": p.name, "error": message, "recorded_doc_id": doc.doc_id,
+                                                            "destination": rel})
+            report.failed += 1
+            report.items.append({"file": p.name, "outcome": "move_failed", "doc_id": doc.doc_id, "destination": rel})
             continue
         projection.index_document(doc, chunks, now=now)
         record.add_event("inbox_recorded", payload={"file": p.name, "doc_id": doc.doc_id, "file_id": file_id, "moved_to": rel,
