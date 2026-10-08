@@ -90,10 +90,11 @@ def test_reindex_and_scan_lock(client, monkeypatch):
     client.post("/scan", headers=W)
     r = client.post("/reindex", headers=W)
     assert r.status_code == 200 and r.json()["chunks_indexed"] >= 3
-    lock = client.app.state.scan_lock
+    lock = client.app.state.maintenance_lock
     assert lock.acquire(blocking=False)
     try:
         assert client.post("/scan", headers=W).status_code == 409
+        assert client.post("/reindex", headers=W).status_code == 409
     finally:
         lock.release()
 

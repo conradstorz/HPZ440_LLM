@@ -48,7 +48,7 @@ def _object(body: Any) -> dict:
 
 def create_app(service: Service) -> FastAPI:
     app = FastAPI(title="Obi-Wan", docs_url=None, redoc_url=None)
-    app.state.scan_lock = threading.Lock()
+    app.state.maintenance_lock = threading.Lock()
 
     def guard(power: str):
         def dep(authorization: str | None = Header(default=None)) -> str:
@@ -128,9 +128,9 @@ def create_app(service: Service) -> FastAPI:
 
     @app.post("/scan")
     def scan(role: str = Depends(guard("scan"))) -> dict:
-        lock = app.state.scan_lock
+        lock = app.state.maintenance_lock
         if not lock.acquire(blocking=False):
-            raise HTTPException(409, "a scan is already in progress")
+            raise HTTPException(409, "a scan or reindex is already in progress")
         try:
             return service.scan(role=role)
         finally:
@@ -138,7 +138,13 @@ def create_app(service: Service) -> FastAPI:
 
     @app.post("/reindex")
     def reindex(role: str = Depends(guard("reindex"))) -> dict:
-        return service.reindex(role=role)
+        lock = app.state.maintenance_lock
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "a scan or reindex is already in progress")
+        try:
+            return service.reindex(role=role)
+        finally:
+            lock.release()
 
     return app
 

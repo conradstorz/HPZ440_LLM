@@ -82,6 +82,21 @@ def test_rebuild_from_the_record_restores_identical_results_without_touching_sou
     p2.close()
 
 
+def test_rebuild_marks_pending_before_dropping_the_fts_table(world, monkeypatch):
+    """If _create() blows up mid-rebuild, the old index is already gone, so coverage must not still claim it as current."""
+    r, p = world
+    _doc(r, p, "f1", "Zebras migrate across the Serengeti.")
+    assert r.coverage_counts()["chunks_indexed"] == 1
+
+    def boom(self):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(type(p), "_create", boom)
+    with pytest.raises(RuntimeError, match="disk full"):
+        p.rebuild(now=T0)
+    assert r.coverage_counts()["chunks_indexed"] == 0
+
+
 def test_a_corrupt_projection_file_is_discarded_on_open(data_dir):
     r = Record(data_dir / "record.sqlite")
     (data_dir / "index").mkdir()

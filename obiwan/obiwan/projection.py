@@ -97,9 +97,9 @@ class FtsProjection:
 
     def rebuild(self, *, now: datetime) -> int:
         """Discard the projection and rebuild it from stored chunks. No source file is read, no text re-extracted."""
-        self._create()
         with self._record.transaction():
             self._record.conn.execute("UPDATE projection SET state = 'pending', reason = NULL, built_at = NULL WHERE kind = ?", (KIND,))
+        self._create()
         n = 0
         for doc in self._record.latest_documents():
             if self._record.tombstone_for(doc.subject_id) is not None:
