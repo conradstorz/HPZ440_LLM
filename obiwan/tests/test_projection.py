@@ -76,9 +76,22 @@ def test_rebuild_from_the_record_restores_identical_results_without_touching_sou
     p.close()
     (data_dir / "index" / "fts.sqlite").unlink()
     p2 = FtsProjection(data_dir / "index", r)
-    assert p2.count() == 0
+    assert p2.count() == 2
     assert p2.rebuild(now=T0) == 2
     assert [(h.chunk_id, h.snippet) for h in p2.search("zebras invoice", k=10)] == before
+    p2.close()
+
+
+def test_a_reset_fts_file_rebuilds_on_open_so_coverage_and_search_agree(world, data_dir):
+    r, p = world
+    _doc(r, p, "f1", "Zebras migrate across the Serengeti.")
+    _doc(r, p, "f2", "Invoice 42 is due Friday.")
+    assert r.coverage_counts()["chunks_indexed"] == 2
+    p.close()
+    (data_dir / "index" / "fts.sqlite").unlink()
+    p2 = FtsProjection(data_dir / "index", r)
+    assert r.coverage_counts()["chunks_indexed"] == 2
+    assert p2.search("zebras", k=5)
     p2.close()
 
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from obiwan.core.ids import utcnow
 from obiwan.record import Chunk, Document, Record
 
 KIND = "fts"
@@ -44,6 +45,7 @@ class FtsProjection:
             stale = True
         if stale:
             self._create()
+            self.rebuild(now=utcnow())
 
     def _create(self) -> None:
         self._conn.executescript(
