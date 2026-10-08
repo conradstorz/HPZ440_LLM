@@ -66,6 +66,15 @@ class FtsProjection:
 
     def index_document(self, doc: Document, chunks: list[Chunk], *, now: datetime) -> None:
         """Make this version searchable and retire every earlier version of the same subject (decision 6)."""
+        latest = self._record.latest_document(doc.subject_id)
+        if latest is None or latest.doc_id != doc.doc_id:
+            # A reclaimed work item for a version that is no longer the latest (decision 6): never let it
+            # displace what has already won. Make sure it is not left searchable and stop.
+            ids = [c.chunk_id for c in chunks]
+            self._remove(ids)
+            self._conn.commit()
+            self._set_state(ids, "stale", reason="superseded", now=now)
+            return
         ids = [c.chunk_id for c in chunks]
         self._remove(ids)
         self._conn.executemany("INSERT INTO chunks_fts(chunk_id, text) VALUES (?, ?)", [(c.chunk_id, c.text) for c in chunks])

@@ -114,6 +114,16 @@ def test_reindexing_the_same_document_does_not_duplicate_rows(world):
     assert p.count() == 1 and p.state_counts() == {"current": 1}
 
 
+def test_indexing_a_superseded_version_never_displaces_the_latest(world):
+    r, p = world
+    v1, v1_chunks = _doc(r, p, "f1", "Zebras.")
+    v2, v2_chunks = _doc(r, p, "f1", "Giraffes.")
+    p.index_document(v1, v1_chunks, now=T0)  # a reclaimed work item for the superseded version, after v2 already won
+    assert [h.chunk_id for h in p.search("giraffes", k=5)] == [f"{v2.doc_id}-0"]
+    assert [h.chunk_id for h in p.search("zebras", k=5)] == []
+    assert p.state_counts() == {"current": 1, "stale": 1}
+
+
 def test_projection_state_from_another_thread_is_not_swallowed_by_an_open_transaction(world):
     import threading
 
