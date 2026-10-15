@@ -11,7 +11,7 @@ Plan: `docs/superpowers/plans/2026-10-07-obiwan-v0.1.md`.
 
 | Actor | Credential | May | May not |
 |---|---|---|---|
-| Commander (Conrad) | `OBIWAN_COMMANDER_TOKEN`, used only through `scripts/obiwan-confirm.ps1` | promote a relayed fact to direct; order a subject forgotten | |
+| Commander (Conrad) | `OBIWAN_COMMANDER_TOKEN`, used only through `scripts/obiwan-confirm.ps1` | promote a relayed fact to direct; order a subject forgotten; exclude a subject whose extraction failed for good | |
 | Admiral (Jarvis) | reader + writer | search; submit machine notes; relay Conrad's words as human/relayed; trigger scans and reindexes | reach `/confirm`; name an origin or attestation; update or delete anything |
 | Historian (Obi-Wan) | none outbound | read source roots; mint identity; store, version, index; report coverage | interpret; call a model; write a source root; delete on its own initiative |
 
@@ -57,6 +57,11 @@ pwsh -NoProfile -File scripts/obiwan-status.ps1
   version at the `direct` rung is inserted; the relayed version stays visible under `/document/{id}`.
 - **Forget**: `pwsh -NoProfile -File scripts/obiwan-confirm.ps1 -SubjectId <id> -Forget -Reason 'why'`. Inserts a
   tombstone, retires the subject from search, keeps the record.
+- **Exclude** (Commander only): `pwsh -NoProfile -File scripts/obiwan-call.ps1 -Role commander -Method POST -Path /confirm -Body
+  '{"subject_id":"<id>","action":"exclude","reason":"why"}'` (the CLI form inside the container is `obiwan exclude <id>
+  --reason R`). Allowed only when the latest version has no chunks and its extract work has failed for good. The
+  document leaves the coverage denominator and `documents_excluded` counts it, so `complete` can be true while
+  `work_failed` is above 0 (that raw count still lists the failed row). A changed file is a new version and is tried fresh.
 - **Scan** after adding or changing files: `scripts/obiwan-scan.ps1`. Idempotent: unchanged files create nothing,
   changed files become a new version of the same `file_id`, moved files keep their `file_id`.
 - **Reindex**: `scripts/obiwan-reindex.ps1` rebuilds the search projection from stored chunks without reading a
@@ -70,7 +75,7 @@ HTTP, with `Authorization: Bearer <token>`. These routes are reachable from Jarv
 ```text
 GET  /search?q=&k=      reader     GET /document/{doc_id}   reader     GET /status   reader   GET /journal?limit=  reader
 POST /submit            writer     POST /relay              writer     POST /scan    writer   POST /reindex        writer
-POST /confirm           commander  {"subject_id": ..., "action": "promote" | "forget", "reason": ...}
+POST /confirm           commander  {"subject_id": ..., "action": "promote" | "forget" | "exclude", "reason": ...}
 GET  /health            none
 ```
 
@@ -88,6 +93,18 @@ GET  /health            none
   reclaimed by the next scan (S11). An unreachable root is reported as a gap and nothing is marked deleted.
 - Both sides journal: Obi-Wan's `events` table (`/journal`) records every acceptance and refusal with the credential
   role; Jarvis journals `obiwan_search` and `obiwan_submit` beside its `tool_call` events (S9).
+- Source roots stay contained: a file whose real path resolves outside its root (a symlink) is skipped and counted as
+  `skipped_outside` in the scan report; the worker refuses it (`PathEscapesRoot`); an inbox entry escaping the inbox
+  moves to `failed/` unread. `obiwan/tests/test_root_readonly.py` proves a full scan, reindex and search writes nothing
+  under a source root.
+- The record schema is versioned (now 2). A file with a newer version is refused without modification; an older one
+  migrates step by step, each step atomic with its `user_version` bump and a `schema_migrated` journal event.
+- Per-document repair: every scan finds latest live documents whose chunks are not current in the projection and
+  enqueues an `index` item for each (`repairs_enqueued`). A terminally failed index item stays failed and counts in
+  `documents_failed`; `/reindex` settles it once the document is current (`index_failures_cleared`). A forgotten
+  subject is never re-indexed.
+- Exclusion is the Commander's alone (power `exclude`, journaled) and only for a latest version with no chunks and a
+  terminally failed extract. `complete` ignores excluded versions and failed work on superseded or forgotten versions.
 - Obi-Wan has no model client and no outbound dependency of any kind (S5, S6).
 
 ## Known limits
