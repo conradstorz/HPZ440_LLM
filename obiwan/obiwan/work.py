@@ -50,6 +50,10 @@ class WorkQueue:
                 (kind, target, n, n, n))
             return cur.rowcount == 1
 
+    def item_for(self, kind: str, target: str) -> WorkItem | None:
+        row = self._conn.execute("SELECT * FROM work WHERE kind = ? AND target = ?", (kind, target)).fetchone()
+        return WorkItem.model_validate(dict(row)) if row else None
+
     def failed_index_targets(self) -> list[str]:
         return [r[0] for r in self._conn.execute("SELECT target FROM work WHERE kind = 'index' AND state = 'failed'").fetchall()]
 

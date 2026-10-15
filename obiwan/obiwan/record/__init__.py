@@ -17,7 +17,7 @@ from obiwan.chunking import ChunkSpec
 from obiwan.core.ids import new_id, utcnow
 from obiwan.record.schema import APPEND_ONLY, ATTESTATIONS, MIGRATIONS, ORIGINS, POWERS, SCHEMA, SCHEMA_VERSION, TRIGGERS
 
-__all__ = ["APPEND_ONLY", "ATTESTATIONS", "ORIGINS", "POWERS", "Chunk", "Document", "Event", "FileRow", "Record",
+__all__ = ["APPEND_ONLY", "ATTESTATIONS", "ORIGINS", "POWERS", "Chunk", "Document", "Event", "Exclusion", "FileRow", "Record",
            "Sighting", "Tombstone"]
 
 
@@ -70,6 +70,14 @@ class Chunk(BaseModel):
 class Tombstone(BaseModel):
     id: int
     subject_id: str
+    reason: str
+    ordered_by: str
+    created_at: datetime
+
+
+class Exclusion(BaseModel):
+    id: int
+    doc_id: str
     reason: str
     ordered_by: str
     created_at: datetime
@@ -200,6 +208,12 @@ class Record:
                                     (subject_id, reason, ordered_by, _iso(created_at)))
             return Tombstone(id=int(cur.lastrowid), subject_id=subject_id, reason=reason, ordered_by=ordered_by, created_at=created_at)
 
+    def add_exclusion(self, *, doc_id: str, reason: str, ordered_by: str, created_at: datetime) -> Exclusion:
+        with self.transaction():
+            cur = self.conn.execute("INSERT INTO exclusions(doc_id, reason, ordered_by, created_at) VALUES (?, ?, ?, ?)",
+                                    (doc_id, reason, ordered_by, _iso(created_at)))
+            return Exclusion(id=int(cur.lastrowid), doc_id=doc_id, reason=reason, ordered_by=ordered_by, created_at=created_at)
+
     def add_event(self, kind: str, *, role: str | None = None, payload: dict[str, Any] | None = None) -> None:
         with self.transaction():
             self.conn.execute("INSERT INTO events(ts, kind, role, payload) VALUES (?, ?, ?, ?)",
@@ -269,6 +283,9 @@ class Record:
     def tombstone_for(self, subject_id: str) -> Tombstone | None:
         return self._one(Tombstone, "SELECT * FROM tombstones WHERE subject_id = ? ORDER BY id DESC LIMIT 1", (subject_id,))
 
+    def exclusion_for(self, doc_id: str) -> Exclusion | None:
+        return self._one(Exclusion, "SELECT * FROM exclusions WHERE doc_id = ?", (doc_id,))
+
     def powers_for(self, role: str) -> set[str]:
         return {r[0] for r in self.conn.execute("SELECT power FROM powers WHERE role = ?", (role,)).fetchall()}
 
@@ -287,6 +304,8 @@ class Record:
     _LATEST_LIVE = ("WITH latest AS (SELECT d.* FROM documents d WHERE d.version_no = "
                     "(SELECT max(version_no) FROM documents WHERE subject_id = d.subject_id) "
                     "AND d.subject_id NOT IN (SELECT subject_id FROM tombstones)) ")
+    # The latest live versions coverage holds to account: those the Commander has not excluded.
+    _COUNTED = _LATEST_LIVE + ", counted AS (SELECT * FROM latest WHERE doc_id NOT IN (SELECT doc_id FROM exclusions)) "
 
     def documents_needing_index(self) -> list[str]:
         """Latest, live documents that have chunks where any chunk lacks a current fts projection row."""
@@ -307,10 +326,17 @@ class Record:
                               "AND NOT EXISTS (SELECT 1 FROM chunks c LEFT JOIN projection p ON p.chunk_id = c.chunk_id AND p.kind = 'fts' "
                               "WHERE c.doc_id = l.doc_id AND (p.state IS NULL OR p.state != 'current'))").fetchone()[0]
         tombstoned = q("SELECT count(DISTINCT subject_id) FROM tombstones").fetchone()[0]
-        documents_failed = q(self._LATEST_LIVE + "SELECT count(*) FROM latest l WHERE "
+        documents_excluded = q(self._LATEST_LIVE + "SELECT count(*) FROM latest l WHERE l.doc_id IN (SELECT doc_id FROM exclusions)").fetchone()[0]
+        documents_failed = q(self._COUNTED + "SELECT count(*) FROM counted l WHERE "
                               "(NOT EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = l.doc_id) "
                               "AND EXISTS (SELECT 1 FROM work w WHERE w.kind = 'extract' AND w.target = l.doc_id AND w.state = 'failed')) "
                               "OR (EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = l.doc_id) "
                               "AND EXISTS (SELECT 1 FROM work w WHERE w.kind = 'index' AND w.target = l.doc_id AND w.state = 'failed'))").fetchone()[0]
         return {"documents": documents, "documents_indexed": documents_indexed, "chunks": chunks, "chunks_indexed": chunks_indexed,
-                "tombstoned": tombstoned, "documents_failed": documents_failed}
+                "tombstoned": tombstoned, "documents_failed": documents_failed, "documents_excluded": documents_excluded}
+
+    def failed_work_blocking(self) -> int:
+        """Failed work rows whose target is a latest, live, non-excluded document: the failures that keep coverage from
+        being complete. A failed row for a superseded, forgotten or excluded version is still listed raw by /status."""
+        return self.conn.execute(self._COUNTED + "SELECT count(*) FROM work w WHERE w.state = 'failed' "
+                                 "AND w.target IN (SELECT doc_id FROM counted)").fetchone()[0]

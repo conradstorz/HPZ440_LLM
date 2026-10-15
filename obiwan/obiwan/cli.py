@@ -1,4 +1,4 @@
-"""obiwan scan | reindex | status | confirm <subject_id> | forget <subject_id> --reason R
+"""obiwan scan | reindex | status | confirm <subject_id> | forget <subject_id> --reason R | exclude <subject_id> --reason R
 
 Runs inside the obiwan container (docker compose exec), where all three credentials are in the environment. The
 commander credential exists only there and in the Commander's own hands: Jarvis's container never receives it."""
@@ -41,6 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     f = sub.add_parser("forget", help="Commander only: tombstone a subject")
     f.add_argument("subject_id")
     f.add_argument("--reason", required=True)
+    x = sub.add_parser("exclude", help="Commander only: take a subject's terminally failed latest version out of coverage")
+    x.add_argument("subject_id")
+    x.add_argument("--reason", required=True)
     call_p = sub.add_parser("call", help="make one HTTP call with a role's credential (operators; replaces curl)")
     call_p.add_argument("method")
     call_p.add_argument("path")
@@ -58,6 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "forget":
         return _call("POST", "/confirm", token_var="OBIWAN_COMMANDER_TOKEN",
                      body={"subject_id": args.subject_id, "action": "forget", "reason": args.reason})
+    if args.cmd == "exclude":
+        return _call("POST", "/confirm", token_var="OBIWAN_COMMANDER_TOKEN",
+                     body={"subject_id": args.subject_id, "action": "exclude", "reason": args.reason})
     if args.cmd == "call":
         body = json.loads(args.json_body) if args.json_body is not None else None
         return _call(args.method.upper(), args.path, token_var=f"OBIWAN_{args.role.upper()}_TOKEN", body=body)

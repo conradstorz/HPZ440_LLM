@@ -1,8 +1,11 @@
+from datetime import timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 
 from obiwan.runtime import build_service
 from obiwan.web import create_app
+from tests.conftest import T0
 
 R, W, C = {"Authorization": "Bearer r-token"}, {"Authorization": "Bearer w-token"}, {"Authorization": "Bearer c-token"}
 
@@ -98,6 +101,58 @@ def test_reindex_and_scan_lock(client, monkeypatch):
         assert client.post("/reindex", headers=W).status_code == 409
     finally:
         lock.release()
+
+
+def _fail_one_terminally(client, corpus, monkeypatch):
+    """broken.md fails extraction on every attempt; returns its subject_id once its extract row is terminally failed."""
+    import obiwan.worker as worker
+    real = worker.extract_text
+
+    def extract(path, **kw):
+        if path.name == "broken.md":
+            raise RuntimeError("unreadable")
+        return real(path, **kw)
+
+    monkeypatch.setattr(worker, "extract_text", extract)
+    (corpus / "broken.md").write_text("broken words\n", encoding="utf-8", newline="\n")
+    svc, clock = client.svc, [T0]
+    svc._now = lambda: clock[0]
+    for _ in range(svc.settings.max_attempts):
+        assert client.post("/scan", headers=W).status_code == 200
+        clock[0] = clock[0] + timedelta(days=2)
+    return svc.record.latest_sighting_at("corpus", "broken.md").file_id
+
+
+def test_commander_excludes_a_failed_document_over_http(client, corpus, monkeypatch):
+    sid = _fail_one_terminally(client, corpus, monkeypatch)
+    assert client.get("/status", headers=R).json()["coverage"]["complete"] is False
+    assert client.post("/confirm", json={"subject_id": sid, "action": "exclude"}, headers=C).status_code == 400  # reason required
+    assert client.post("/confirm", json={"subject_id": sid, "action": "exclude", "reason": "  "}, headers=C).status_code == 400
+    assert client.post("/confirm", json={"subject_id": "nope", "action": "exclude", "reason": "r"}, headers=C).status_code == 404
+    zebra = client.svc.record.latest_sighting_at("corpus", "zebra.md").file_id
+    assert client.post("/confirm", json={"subject_id": zebra, "action": "exclude", "reason": "r"}, headers=C).status_code == 409  # indexed
+    r = client.post("/confirm", json={"subject_id": sid, "action": "exclude", "reason": "garbage scan"}, headers=C)
+    assert r.status_code == 200 and r.json()["exclusion"]["reason"] == "garbage scan"
+    assert client.post("/confirm", json={"subject_id": sid, "action": "exclude", "reason": "again"}, headers=C).status_code == 409
+    st = client.get("/status", headers=R).json()
+    assert st["coverage"]["complete"] is True and st["coverage"]["documents_excluded"] == 1 and len(st["work_failed"]) == 1
+    assert client.get("/journal", params={"limit": 50}, headers=R).json()[0]["kind"] == "exclusion"
+
+
+def test_writer_and_reader_cannot_exclude(client, corpus, monkeypatch):
+    sid = _fail_one_terminally(client, corpus, monkeypatch)
+    rec = client.svc.record
+    before = len(rec.events(limit=500, kind="refused"))
+    for headers in (W, R):
+        assert client.post("/confirm", json={"subject_id": sid, "action": "exclude", "reason": "r"}, headers=headers).status_code == 403
+    assert len(rec.events(limit=500, kind="refused")) == before + 2
+    # The exclude power itself is checked, not only the route's confirm power: a writer holding confirm still cannot exclude.
+    rec.conn.execute("INSERT INTO powers(role, power, granted_at) VALUES ('writer', 'confirm', 'test')")
+    r = client.post("/confirm", json={"subject_id": sid, "action": "exclude", "reason": "r"}, headers=W)
+    assert r.status_code == 403 and "exclude" in r.json()["detail"]
+    ev = rec.events(limit=1)[0]
+    assert ev.kind == "refused" and ev.role == "writer" and ev.payload["power"] == "exclude"
+    assert rec.events(limit=500, kind="exclusion") == [] and rec.exclusion_for(rec.latest_document(sid).doc_id) is None
 
 
 def test_a_non_object_body_is_400_not_422(client):

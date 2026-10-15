@@ -29,7 +29,7 @@ class RelayBody(BaseModel):
 class ConfirmBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     subject_id: str
-    action: Literal["promote", "forget"] = "promote"
+    action: Literal["promote", "forget", "exclude"] = "promote"
     reason: str | None = None
 
 
@@ -120,6 +120,11 @@ def create_app(service: Service) -> FastAPI:
                 if not (p.reason or "").strip():
                     raise HTTPException(400, "reason is required to forget")
                 return service.forget(subject_id=p.subject_id, reason=p.reason, role=role)
+            if p.action == "exclude":
+                guard("exclude")(authorization)
+                if not (p.reason or "").strip():
+                    raise HTTPException(400, "reason is required to exclude")
+                return service.exclude(subject_id=p.subject_id, reason=p.reason, role=role)
             return service.confirm(subject_id=p.subject_id, role=role)
         except KeyError as e:
             raise HTTPException(404, f"unknown subject {p.subject_id}") from e

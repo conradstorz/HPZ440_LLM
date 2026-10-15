@@ -100,6 +100,28 @@ class Service:
         self.projection.retire_subject(subject_id, reason="forgotten", now=now)
         return {"subject_id": subject_id, "tombstone": tomb.model_dump(mode="json")}
 
+    def exclude(self, *, subject_id: str, reason: str, role: str) -> dict:
+        """Take the latest version of a subject out of coverage because its extraction failed for good. Only that version:
+        a changed file is a new version and is tried fresh. The failed work row stays, raw, in /status."""
+        if not (reason or "").strip():
+            raise ValueError("reason is required to exclude")
+        latest = self._live_latest(subject_id)
+        if self.record.exclusion_for(latest.doc_id) is not None:
+            raise ValueError(f"version {latest.doc_id} is already excluded")
+        n = len(self.record.chunks_for(latest.doc_id))
+        if n:
+            raise ValueError(f"version {latest.doc_id} has {n} chunks; only a version with no chunks and a failed extract can be excluded")
+        item = self.work.item_for("extract", latest.doc_id)
+        state = item.state if item else None
+        if item is None or state != "failed":
+            raise ValueError(f"version {latest.doc_id} cannot be excluded: its extract work is {state!r}, not 'failed'")
+        now = self._now()
+        with self.record.transaction():
+            exc = self.record.add_exclusion(doc_id=latest.doc_id, reason=reason, ordered_by=role, created_at=now)
+            self.record.add_event("exclusion", role=role, payload={"subject_id": subject_id, "doc_id": latest.doc_id, "reason": reason,
+                                                                   "last_error": item.last_error})
+        return {"subject_id": subject_id, "exclusion": exc.model_dump(mode="json")}
+
     def scan(self, *, role: str) -> dict:
         scan_id, started = new_id(), self._now()
         roots = scan_roots(self.settings.roots, record=self.record, work=self.work, scan_id=scan_id, now=started,
@@ -167,8 +189,10 @@ class Service:
             r = reported.get(name)
             roots.append({"name": name, "path": str(path), "reachable": bool(r and r["reachable"]),
                           "last_scan_at": last["finished_at"] if r else None})
-        complete = (counts["documents"] == counts["documents_indexed"] and wq["pending"] == 0 and wq["failed"] == 0
-                    and all(r["reachable"] for r in roots))
+        # An excluded version never has chunks, so it is never among documents_indexed. Failed work on a superseded,
+        # forgotten or excluded version does not block; work_failed stays the raw count and /status lists every row.
+        complete = (counts["documents"] - counts["documents_excluded"] == counts["documents_indexed"] and wq["pending"] == 0
+                    and self.record.failed_work_blocking() == 0 and all(r["reachable"] for r in roots))
         return {**counts, "work_pending": wq["pending"], "work_failed": wq["failed"], "roots": roots,
                 "last_scan_at": last["finished_at"] if last else None, "complete": complete}
 
