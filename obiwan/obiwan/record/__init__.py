@@ -288,6 +288,14 @@ class Record:
                     "(SELECT max(version_no) FROM documents WHERE subject_id = d.subject_id) "
                     "AND d.subject_id NOT IN (SELECT subject_id FROM tombstones)) ")
 
+    def documents_needing_index(self) -> list[str]:
+        """Latest, live documents that have chunks where any chunk lacks a current fts projection row."""
+        rows = self.conn.execute(
+            self._LATEST_LIVE + "SELECT l.doc_id FROM latest l WHERE EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = l.doc_id) "
+            "AND EXISTS (SELECT 1 FROM chunks c LEFT JOIN projection p ON p.chunk_id = c.chunk_id AND p.kind = 'fts' "
+            "WHERE c.doc_id = l.doc_id AND (p.state IS NULL OR p.state != 'current')) ORDER BY l.doc_id").fetchall()
+        return [r[0] for r in rows]
+
     def coverage_counts(self) -> dict[str, int]:
         """S10: how much of the latest, non-forgotten record is searchable right now."""
         q = self.conn.execute

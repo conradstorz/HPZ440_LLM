@@ -38,6 +38,17 @@ class WorkQueue:
                 "VALUES (?, ?, 'pending', 0, ?, ?, ?)", (kind, target, now.isoformat(), now.isoformat(), now.isoformat()))
             return cur.rowcount == 1
 
+    def requeue(self, kind: str, target: str, *, now: datetime) -> bool:
+        """Insert as pending, or reset a done/failed row so it runs again. Pending and leased rows are left alone."""
+        n = now.isoformat()
+        with self._record.transaction():
+            cur = self._conn.execute(
+                "INSERT INTO work(kind, target, state, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, 'pending', 0, ?, ?, ?) "
+                "ON CONFLICT(kind, target) DO UPDATE SET state = 'pending', attempts = 0, last_error = NULL, lease_until = NULL, "
+                "next_attempt_at = excluded.next_attempt_at, updated_at = excluded.updated_at WHERE work.state IN ('done', 'failed')",
+                (kind, target, n, n, n))
+            return cur.rowcount == 1
+
     _CLAIMABLE = "((state = 'pending' AND next_attempt_at <= :now) OR (state = 'leased' AND lease_until <= :now))"
 
     def claim(self, *, now: datetime, lease_seconds: int) -> WorkItem | None:

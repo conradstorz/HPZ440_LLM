@@ -105,13 +105,16 @@ class Service:
         roots = scan_roots(self.settings.roots, record=self.record, work=self.work, scan_id=scan_id, now=started,
                            max_file_bytes=self.settings.max_file_bytes)
         inbox = process_inbox(self.inbox, record=self.record, projection=self.projection, settings=self.settings, scan_id=scan_id, now=started)
+        repairs = sum(self.work.requeue("index", doc_id, now=started) for doc_id in self.record.documents_needing_index())
         work = drain(record=self.record, work=self.work, projection=self.projection, roots=self.roots, settings=self.settings, now=started)
         finished = self._now()
         report = {"scan_id": scan_id, "started_at": started.isoformat(), "finished_at": finished.isoformat(),
-                  "roots": [r.model_dump() for r in roots], "inbox": inbox.model_dump(), "work": work.model_dump()}
+                  "roots": [r.model_dump() for r in roots], "inbox": inbox.model_dump(), "work": work.model_dump(),
+                  "repairs_enqueued": repairs}
         self.record.add_scan(scan_id=scan_id, started_at=started, finished_at=finished, report=report)
         self.record.add_event("scan", role=role, payload={"scan_id": scan_id, "roots": [(r.name, r.reachable, r.seen) for r in roots],
-                                                          "inbox": (inbox.recorded, inbox.failed), "work": work.model_dump()})
+                                                          "inbox": (inbox.recorded, inbox.failed), "work": work.model_dump(),
+                                                          "repairs_enqueued": repairs})
         return report
 
     def reindex(self, *, role: str) -> dict:

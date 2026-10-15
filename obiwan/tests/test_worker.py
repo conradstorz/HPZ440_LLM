@@ -89,3 +89,27 @@ def test_a_path_that_escapes_the_root_fails_with_a_dedicated_reason_and_nothing_
     assert rep.completed == 0 and rep.postponed + rep.failed == 3
     assert all(e.startswith("PathEscapesRoot") for e in rep.errors)
     assert r.coverage_counts()["chunks"] == 0
+
+
+def test_an_index_item_reindexes_from_stored_chunks_and_never_reads_a_source(world, settings, corpus, monkeypatch):
+    r, w, p = world
+    drain(record=r, work=w, projection=p, roots={"corpus": corpus}, settings=settings, now=T0)
+    doc = r.document(r.chunk(p.search("serengeti", k=1)[0].chunk_id).doc_id)
+    ids = [c.chunk_id for c in r.chunks_for(doc.doc_id)]
+    p.retire_subject(doc.subject_id, reason="test", now=T0)
+    assert p.search("serengeti", k=5) == []
+    monkeypatch.setattr("obiwan.worker.extract_text", lambda *a, **k: pytest.fail("source was read"))
+    w.requeue("index", doc.doc_id, now=T0)
+    rep = drain(record=r, work=w, projection=p, roots={}, settings=settings, now=T0)
+    assert (rep.completed, rep.failed, rep.postponed) == (1, 0, 0)
+    assert [h.chunk_id for h in p.search("serengeti", k=5)] and set(ids) <= {h.chunk_id for h in p.search("serengeti", k=5)}
+
+
+def test_an_index_item_for_a_document_without_chunks_is_an_error(world, settings, corpus):
+    r, w, p = world
+    doc = r.latest_documents()[0]
+    w.requeue("index", doc.doc_id, now=T0)
+    item = next(i for i in iter(lambda: w.claim(now=T0, lease_seconds=60), None) if i.kind == "index")
+    from obiwan.worker import process_item
+    with pytest.raises(RuntimeError, match="no chunks"):
+        process_item(item, record=r, projection=p, roots={}, settings=settings, now=T0)

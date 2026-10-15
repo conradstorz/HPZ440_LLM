@@ -185,3 +185,40 @@ def test_status_and_journal(svc, inbox_dir):
     assert st["last_scan"]["inbox"]["recorded"] == 1 and st["projection"] == {"current": st["coverage"]["chunks"]}
     kinds = [e["kind"] for e in svc.journal(limit=50)]
     assert "inbox_failed" in kinds and "inbox_recorded" in kinds and kinds[0] == "scan"
+
+
+def test_scan_repairs_one_documents_projection_without_touching_others_or_sources(svc, monkeypatch):
+    svc.scan(role="writer")
+    docs = svc.record.latest_documents()
+    victim, others = docs[0], docs[1:]
+    q = svc.record.conn.execute
+
+    def built(doc_id):
+        return q("SELECT p.chunk_id, p.built_at, p.state FROM projection p JOIN chunks c ON c.chunk_id = p.chunk_id "
+                 "WHERE c.doc_id = ? AND p.kind = 'fts' ORDER BY p.chunk_id", (doc_id,)).fetchall()
+
+    before_others = {d.doc_id: [tuple(r) for r in built(d.doc_id)] for d in others}
+
+    def break_it():
+        ids = [c.chunk_id for c in svc.record.chunks_for(victim.doc_id)]
+        with svc.record.transaction():
+            svc.record.conn.executemany("UPDATE projection SET state = 'stale', reason = 'test', built_at = NULL WHERE chunk_id = ? AND kind = 'fts'",
+                                        [(i,) for i in ids])
+        svc.projection._remove(ids)
+        svc.projection._conn.commit()
+        assert svc.record.documents_needing_index() == [victim.doc_id]
+
+    def no_source(*a, **k):
+        raise AssertionError("a source file was read")
+
+    monkeypatch.setattr("obiwan.worker.extract_text", no_source)
+    for i in (1, 2):  # the second break proves requeue resets a done item
+        break_it()
+        svc._now = lambda t=T0 + timedelta(hours=i): t
+        rep = svc.scan(role="writer")
+        assert rep["repairs_enqueued"] == 1
+        assert [r[2] for r in built(victim.doc_id)] == ["current"] * len(built(victim.doc_id))
+        assert svc.record.documents_needing_index() == []
+        assert {d.doc_id: [tuple(r) for r in built(d.doc_id)] for d in others} == before_others
+    assert svc.search("serengeti zebras", k=5)["results"]
+    assert svc.scan(role="writer")["repairs_enqueued"] == 0

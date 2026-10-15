@@ -34,12 +34,17 @@ class WorkReport(BaseModel):
 
 def process_item(item: WorkItem, *, record: Record, projection: FtsProjection, roots: dict[str, Path], settings: Settings,
                  now: datetime) -> None:
-    if item.kind != "extract":
+    if item.kind not in ("extract", "index"):
         raise RuntimeError(f"unknown work kind {item.kind!r}")
     doc = record.document(item.target)
     if doc is None:
         raise RuntimeError(f"document {item.target} is not in the record")
     chunks = record.chunks_for(doc.doc_id)
+    if item.kind == "index":  # projection repair from stored chunks only; the extract item owns the no-chunks case
+        if not chunks:
+            raise RuntimeError(f"document {doc.doc_id} has no chunks to index; its extract item owns that case")
+        projection.index_document(doc, chunks, now=now)
+        return
     if not chunks:  # a reclaimed item may have died between add_chunks and complete(); never write them twice
         sighting = record.latest_sighting(doc.subject_id)
         if sighting is None:

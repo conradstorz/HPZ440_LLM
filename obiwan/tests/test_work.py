@@ -102,3 +102,22 @@ def test_backoff_doubles_and_is_capped():
     assert backoff(2) == timedelta(minutes=4)
     assert backoff(3) == timedelta(minutes=8)
     assert backoff(20) == timedelta(hours=24)
+
+
+def test_requeue_inserts_and_resets_done_and_failed_but_leaves_pending_and_leased(q):
+    assert q.requeue("index", "d1", now=T0) is True  # absent: inserted pending
+    assert q.requeue("index", "d1", now=T0) is False  # pending: left alone
+    item = q.claim(now=T0, lease_seconds=300)
+    assert q.requeue("index", "d1", now=T0) is False  # leased: left alone
+    assert q.claim(now=T0, lease_seconds=300) is None
+    q.complete(item.id, now=T0)
+    later = T0 + timedelta(days=1)
+    assert q.requeue("index", "d1", now=later) is True  # done: reset
+    again = q.claim(now=later, lease_seconds=300)
+    assert again.id == item.id and again.attempts == 0 and again.last_error is None
+    for _ in range(3):
+        q.fail(again.id, "boom", now=later, max_attempts=1)
+    assert q.counts()["failed"] == 1
+    assert q.requeue("index", "d1", now=later) is True  # failed: reset
+    item = q.claim(now=later, lease_seconds=300)
+    assert item.attempts == 0 and item.last_error is None and item.state == "leased"
