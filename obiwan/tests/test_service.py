@@ -223,7 +223,8 @@ def test_scan_repairs_one_documents_projection_without_touching_others_or_source
     victim_ids = {c.chunk_id for c in svc.record.chunks_for(victim.doc_id)}
     in_fts = {r[0] for r in svc.projection._conn.execute("SELECT chunk_id FROM chunks_fts")}
     assert victim_ids <= in_fts
-    word = svc.record.chunks_for(victim.doc_id)[0].text.split()[0]
+    # The victim is random (doc ids order latest_documents); zebra.md opens with "#", which FTS cannot match.
+    word = next(w for w in svc.record.chunks_for(victim.doc_id)[0].text.split() if w.isalnum())
     assert victim_ids & {r["chunk_id"] for r in svc.search(word, k=25)["results"]}
     assert svc.scan(role="writer")["repairs_enqueued"] == 0
 
