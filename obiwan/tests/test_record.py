@@ -175,3 +175,62 @@ def test_coverage_counts_latest_non_tombstoned_only(record):
     assert cov == {"documents": 1, "documents_indexed": 0, "chunks": 2, "chunks_indexed": 1, "tombstoned": 1, "documents_failed": 0}
     record.conn.execute("INSERT INTO projection(chunk_id, kind, state) VALUES (?, 'fts', 'current')", (f"{b.doc_id}-1",))
     assert record.coverage_counts()["documents_indexed"] == 1
+
+
+# ----- schema version check and migration seam -----
+
+def _user_version(path):
+    c = sqlite3.connect(path)
+    try:
+        return c.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        c.close()
+
+
+def test_fresh_record_gets_current_schema_version(data_dir):
+    from obiwan.record.schema import SCHEMA_VERSION
+    r = Record(data_dir / "record.sqlite")
+    r.close()
+    assert _user_version(data_dir / "record.sqlite") == SCHEMA_VERSION
+
+
+def test_reopening_current_version_journals_no_migration(data_dir):
+    Record(data_dir / "record.sqlite").close()
+    r = Record(data_dir / "record.sqlite")
+    try:
+        assert r.events(kind="schema_migrated") == []
+    finally:
+        r.close()
+
+
+def test_newer_record_is_refused_and_left_untouched(data_dir):
+    from obiwan.record.schema import SCHEMA_VERSION
+    path = data_dir / "record.sqlite"
+    Record(path).close()
+    c = sqlite3.connect(path)
+    c.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    c.close()
+    with pytest.raises(RuntimeError, match=rf"schema {SCHEMA_VERSION + 1}.*understands {SCHEMA_VERSION}"):
+        Record(path)
+    assert _user_version(path) == SCHEMA_VERSION + 1
+
+
+def test_older_record_runs_migration_steps_and_journals(data_dir, monkeypatch):
+    import obiwan.record as rec
+    path = data_dir / "record.sqlite"
+    Record(path).close()
+    monkeypatch.setattr(rec, "SCHEMA_VERSION", 2)
+    monkeypatch.setattr(rec, "MIGRATIONS", {2: "CREATE TABLE IF NOT EXISTS migrated_probe (x INTEGER);"})
+    r = Record(path)
+    try:
+        assert r.conn.execute("SELECT name FROM sqlite_master WHERE name = 'migrated_probe'").fetchone() is not None
+        evs = r.events(kind="schema_migrated")
+        assert len(evs) == 1 and evs[0].payload == {"from": 1, "to": 2}
+    finally:
+        r.close()
+    assert _user_version(path) == 2
+    r = Record(path)
+    try:
+        assert len(r.events(kind="schema_migrated")) == 1
+    finally:
+        r.close()

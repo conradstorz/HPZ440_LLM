@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from obiwan.chunking import ChunkSpec
 from obiwan.core.ids import new_id, utcnow
-from obiwan.record.schema import APPEND_ONLY, ATTESTATIONS, ORIGINS, POWERS, SCHEMA, SCHEMA_VERSION, TRIGGERS
+from obiwan.record.schema import APPEND_ONLY, ATTESTATIONS, MIGRATIONS, ORIGINS, POWERS, SCHEMA, SCHEMA_VERSION, TRIGGERS
 
 __all__ = ["APPEND_ONLY", "ATTESTATIONS", "ORIGINS", "POWERS", "Chunk", "Document", "Event", "FileRow", "Record",
            "Sighting", "Tombstone"]
@@ -96,14 +96,27 @@ class Record:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        found = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if found > SCHEMA_VERSION:
+            self.conn.close()
+            raise RuntimeError(f"record is schema {found}, this build understands {SCHEMA_VERSION}")
         self.conn.executescript(SCHEMA + TRIGGERS)
         now = _iso(utcnow())
         for role, powers in POWERS.items():
             for power in sorted(powers):
                 self.conn.execute("INSERT OR IGNORE INTO powers(role, power, granted_at) VALUES (?, ?, ?)", (role, power, now))
-        self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._lock = threading.RLock()
         self._depth = 0
+        # executescript commits implicitly, so steps are not one transaction: each is idempotent and
+        # user_version advances per step, so an interrupted migration resumes where it stopped.
+        if found == 0:  # fresh file: SCHEMA + TRIGGERS already describe the current shape
+            self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        elif found < SCHEMA_VERSION:
+            for step in range(found + 1, SCHEMA_VERSION + 1):
+                if step in MIGRATIONS:
+                    self.conn.executescript(MIGRATIONS[step])
+                self.conn.execute(f"PRAGMA user_version = {step}")
+            self.add_event("schema_migrated", payload={"from": found, "to": SCHEMA_VERSION})
 
     @contextmanager
     def transaction(self) -> Iterator[None]:

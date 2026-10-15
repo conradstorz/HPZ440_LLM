@@ -7,6 +7,10 @@ ATTESTATIONS = ("relayed", "direct")
 APPEND_ONLY = ("files", "sightings", "documents", "texts", "chunks", "tombstones", "events", "powers", "scans")
 SCHEMA_VERSION = 1
 
+# Migration step N takes a record from schema N-1 to N: an executescript-able SQL script, idempotent
+# (CREATE ... IF NOT EXISTS), because executescript commits implicitly and a step cannot share one transaction.
+MIGRATIONS: dict[int, str] = {}
+
 # S12: powers are data. Code asks the table, never a role name.
 _READER = {"search", "read_document", "status", "journal_read"}
 _WRITER = _READER | {"submit", "relay", "scan", "reindex"}
