@@ -7,9 +7,9 @@ ATTESTATIONS = ("relayed", "direct")
 APPEND_ONLY = ("files", "sightings", "documents", "texts", "chunks", "tombstones", "events", "powers", "scans")
 SCHEMA_VERSION = 1
 
-# Migration step N takes a record from schema N-1 to N: an executescript-able SQL script, idempotent
-# (CREATE ... IF NOT EXISTS), because executescript commits implicitly and a step cannot share one transaction.
-MIGRATIONS: dict[int, str] = {}
+# Migration step N takes a record from schema N-1 to N: a tuple of single SQL statements (a CREATE TRIGGER ... BEGIN ...
+# END; is one statement). Record runs each step in one transaction with its user_version bump and journal event.
+MIGRATIONS: dict[int, tuple[str, ...]] = {}
 
 # S12: powers are data. Code asks the table, never a role name.
 _READER = {"search", "read_document", "status", "journal_read"}

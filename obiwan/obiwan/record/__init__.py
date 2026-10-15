@@ -94,29 +94,38 @@ class Record:
         # Autocommit mode: single statements commit at once; multi-statement work uses transaction().
         self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA foreign_keys=ON")
+        self._lock = threading.RLock()
+        self._depth = 0
+        try:
+            self._open()
+        except BaseException:
+            self.conn.close()
+            raise
+
+    def _open(self) -> None:
+        # Read the version before anything that could modify the file.
         found = self.conn.execute("PRAGMA user_version").fetchone()[0]
         if found > SCHEMA_VERSION:
-            self.conn.close()
             raise RuntimeError(f"record is schema {found}, this build understands {SCHEMA_VERSION}")
+        missing = [n for n in range(found + 1, SCHEMA_VERSION + 1) if found > 0 and n not in MIGRATIONS]
+        if missing:
+            raise RuntimeError(f"record is schema {found}, this build is {SCHEMA_VERSION}, but has no migration for step {missing[0]}")
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA + TRIGGERS)
         now = _iso(utcnow())
         for role, powers in POWERS.items():
             for power in sorted(powers):
                 self.conn.execute("INSERT OR IGNORE INTO powers(role, power, granted_at) VALUES (?, ?, ?)", (role, power, now))
-        self._lock = threading.RLock()
-        self._depth = 0
-        # executescript commits implicitly, so steps are not one transaction: each is idempotent and
-        # user_version advances per step, so an interrupted migration resumes where it stopped.
         if found == 0:  # fresh file: SCHEMA + TRIGGERS already describe the current shape
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        elif found < SCHEMA_VERSION:
-            for step in range(found + 1, SCHEMA_VERSION + 1):
-                if step in MIGRATIONS:
-                    self.conn.executescript(MIGRATIONS[step])
+            return
+        for step in range(found + 1, SCHEMA_VERSION + 1):
+            with self.transaction():  # statements, version bump and journal row commit together or not at all
+                for stmt in MIGRATIONS[step]:
+                    self.conn.execute(stmt)
                 self.conn.execute(f"PRAGMA user_version = {step}")
-            self.add_event("schema_migrated", payload={"from": found, "to": SCHEMA_VERSION})
+                self.add_event("schema_migrated", payload={"from": step - 1, "to": step})
 
     @contextmanager
     def transaction(self) -> Iterator[None]:

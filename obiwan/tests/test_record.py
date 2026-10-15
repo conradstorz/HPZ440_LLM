@@ -220,7 +220,7 @@ def test_older_record_runs_migration_steps_and_journals(data_dir, monkeypatch):
     path = data_dir / "record.sqlite"
     Record(path).close()
     monkeypatch.setattr(rec, "SCHEMA_VERSION", 2)
-    monkeypatch.setattr(rec, "MIGRATIONS", {2: "CREATE TABLE IF NOT EXISTS migrated_probe (x INTEGER);"})
+    monkeypatch.setattr(rec, "MIGRATIONS", {2: ("CREATE TABLE migrated_probe (x INTEGER)",)})
     r = Record(path)
     try:
         assert r.conn.execute("SELECT name FROM sqlite_master WHERE name = 'migrated_probe'").fetchone() is not None
@@ -234,3 +234,54 @@ def test_older_record_runs_migration_steps_and_journals(data_dir, monkeypatch):
         assert len(r.events(kind="schema_migrated")) == 1
     finally:
         r.close()
+
+
+def test_failing_step_rolls_back_and_retry_succeeds(data_dir, monkeypatch):
+    import obiwan.record as rec
+    path = data_dir / "record.sqlite"
+    Record(path).close()
+    monkeypatch.setattr(rec, "SCHEMA_VERSION", 2)
+    monkeypatch.setattr(rec, "MIGRATIONS", {2: ("CREATE TABLE half_done (x INTEGER)", "THIS IS NOT SQL")})
+    with pytest.raises(sqlite3.Error):
+        Record(path)
+    assert _user_version(path) == 1
+    c = sqlite3.connect(path)
+    try:
+        assert c.execute("SELECT 1 FROM sqlite_master WHERE name = 'half_done'").fetchone() is None
+        assert c.execute("SELECT count(*) FROM events WHERE kind = 'schema_migrated'").fetchone()[0] == 0
+    finally:
+        c.close()
+    monkeypatch.setattr(rec, "MIGRATIONS", {2: ("CREATE TABLE half_done (x INTEGER)",)})
+    r = Record(path)
+    try:
+        assert len(r.events(kind="schema_migrated")) == 1
+    finally:
+        r.close()
+    assert _user_version(path) == 2
+
+
+def test_span_applies_every_step(data_dir, monkeypatch):
+    import obiwan.record as rec
+    path = data_dir / "record.sqlite"
+    Record(path).close()
+    monkeypatch.setattr(rec, "SCHEMA_VERSION", 3)
+    monkeypatch.setattr(rec, "MIGRATIONS", {2: ("CREATE TABLE p2 (x INTEGER)",), 3: ("CREATE TABLE p3 (x INTEGER)",)})
+    r = Record(path)
+    try:
+        names = {row[0] for row in r.conn.execute("SELECT name FROM sqlite_master WHERE name IN ('p2', 'p3')")}
+        assert names == {"p2", "p3"}
+        assert sorted((e.payload["from"], e.payload["to"]) for e in r.events(kind="schema_migrated")) == [(1, 2), (2, 3)]
+    finally:
+        r.close()
+    assert _user_version(path) == 3
+
+
+def test_missing_migration_step_raises_and_leaves_file(data_dir, monkeypatch):
+    import obiwan.record as rec
+    path = data_dir / "record.sqlite"
+    Record(path).close()
+    monkeypatch.setattr(rec, "SCHEMA_VERSION", 3)
+    monkeypatch.setattr(rec, "MIGRATIONS", {3: ("CREATE TABLE p3 (x INTEGER)",)})
+    with pytest.raises(RuntimeError, match="step 2"):
+        Record(path)
+    assert _user_version(path) == 1
