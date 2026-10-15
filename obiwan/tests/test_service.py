@@ -249,7 +249,8 @@ def test_a_terminal_index_failure_stays_visible_until_reindex_settles_it(svc):
     assert cov["documents_failed"] == 1 and cov["complete"] is False
     out = svc.reindex(role="writer")
     assert out["index_failures_cleared"] == 1
-    assert svc.record.events(limit=1)[0].payload["index_failures_cleared"] == 1
+    payload = svc.record.events(limit=1)[0].payload
+    assert payload["index_failures_cleared"] == 1 and payload["index_failures_cleared_doc_ids"] == [victim.doc_id]
     cov = svc.coverage()
     assert cov["documents_failed"] == 0 and cov["complete"] is True
 
@@ -360,3 +361,48 @@ def test_exclude_refuses_a_version_whose_extract_has_not_failed_terminally(svc, 
     with pytest.raises(ValueError, match="no chunks"):
         svc.exclude(subject_id=sub["subject_id"], reason="r", role="commander")
     assert svc.record.events(limit=100, kind="exclusion") == []
+
+
+def test_a_concurrent_exclude_that_loses_the_race_is_a_409_style_value_error_not_an_integrity_error(svc, breakable, monkeypatch):
+    breakable["fail_terminally"]()
+    sid = _subject_at(svc, "broken.md")
+    svc.exclude(subject_id=sid, reason="first", role="commander")
+    with pytest.raises(ValueError, match="already excluded"):
+        svc.exclude(subject_id=sid, reason="second", role="commander")
+    # The racing caller passed the pre-check before the winner committed: the unique key still refuses it.
+    monkeypatch.setattr(svc.record, "exclusion_for", lambda doc_id: None)
+    with pytest.raises(ValueError, match="already excluded"):
+        svc.exclude(subject_id=sid, reason="third", role="commander")
+    assert len(svc.record.events(limit=100, kind="exclusion")) == 1
+
+
+def test_a_failed_extract_on_a_document_that_later_became_fully_indexed_does_not_pin_complete(svc, corpus, monkeypatch):
+    (corpus / "late.md").write_text("late words here\n", encoding="utf-8", newline="\n")
+    real = svc.projection.index_document
+    broken = {"on": True}
+
+    def index_document(doc, chunks, *, now):
+        if broken["on"] and doc.title == "late.md":
+            raise RuntimeError("index down")
+        return real(doc, chunks, now=now)
+
+    monkeypatch.setattr(svc.projection, "index_document", index_document)
+    # Only the extract item hits the broken projection: the repair sweep is held off until the projection is back.
+    real_needing = svc.record.documents_needing_index
+    monkeypatch.setattr(svc.record, "documents_needing_index", lambda: [])
+    clock = [T0]
+    svc._now = lambda: clock[0]
+    for _ in range(svc.settings.max_attempts):
+        svc.scan(role="writer")
+        clock[0] = clock[0] + timedelta(days=2)
+    late = svc.record.latest_document(_subject_at(svc, "late.md"))
+    assert svc.record.chunks_for(late.doc_id)
+    assert svc.work.item_for("extract", late.doc_id).state == "failed"
+    assert svc.coverage()["complete"] is False
+    broken["on"] = False
+    monkeypatch.setattr(svc.record, "documents_needing_index", real_needing)
+    assert svc.scan(role="writer")["repairs_enqueued"] == 1  # the repair sweep makes the document current
+    cov = svc.coverage()
+    assert svc.work.item_for("extract", late.doc_id).state == "failed" and cov["work_failed"] == 1  # raw row stays visible
+    assert [w["target"] for w in svc.status()["work_failed"]] == [late.doc_id]
+    assert cov["documents_indexed"] == cov["documents"] and cov["documents_failed"] == 0 and cov["complete"] is True

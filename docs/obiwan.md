@@ -61,7 +61,7 @@ pwsh -NoProfile -File scripts/obiwan-status.ps1
   '{"subject_id":"<id>","action":"exclude","reason":"why"}'` (the CLI form inside the container is `obiwan exclude <id>
   --reason R`). Allowed only when the latest version has no chunks and its extract work has failed for good. The
   document leaves the coverage denominator and `documents_excluded` counts it, so `complete` can be true while
-  `work_failed` is above 0 (that raw count still lists the failed row). A changed file is a new version and is tried fresh.
+  `work_failed` is above 0 (that raw count still lists the failed row). Exclusion is irreversible for that version: there is no un-exclude. A changed file is a new version and is tried fresh.
 - **Scan** after adding or changing files: `scripts/obiwan-scan.ps1`. Idempotent: unchanged files create nothing,
   changed files become a new version of the same `file_id`, moved files keep their `file_id`.
 - **Reindex**: `scripts/obiwan-reindex.ps1` rebuilds the search projection from stored chunks without reading a
@@ -98,13 +98,17 @@ GET  /health            none
   moves to `failed/` unread. `obiwan/tests/test_root_readonly.py` proves a full scan, reindex and search writes nothing
   under a source root.
 - The record schema is versioned (now 2). A file with a newer version is refused without modification; an older one
-  migrates step by step, each step atomic with its `user_version` bump and a `schema_migrated` journal event.
+  migrates step by step. Opening an older file first applies the current `CREATE ... IF NOT EXISTS` schema and triggers,
+  then each migration step's statements, its `user_version` bump and its `schema_migrated` journal event commit together
+  in one transaction. The steps are idempotent additive DDL, so a step that fails is rolled back and retried on the next open.
 - Per-document repair: every scan finds latest live documents whose chunks are not current in the projection and
   enqueues an `index` item for each (`repairs_enqueued`). A terminally failed index item stays failed and counts in
-  `documents_failed`; `/reindex` settles it once the document is current (`index_failures_cleared`). A forgotten
+  `documents_failed`; a scan never retries it, and only `/reindex` settles it once the document is current (`index_failures_cleared`). A forgotten
   subject is never re-indexed.
 - Exclusion is the Commander's alone (power `exclude`, journaled) and only for a latest version with no chunks and a
-  terminally failed extract. `complete` ignores excluded versions and failed work on superseded or forgotten versions.
+  terminally failed extract. `complete` ignores excluded versions and failed work on superseded or forgotten versions. A failed
+  extract row on a document that has chunks does not block `complete` either (index repair owns that case, and a projection
+  that is not current still shows in `documents_indexed`); `/status` keeps listing the raw row.
 - Obi-Wan has no model client and no outbound dependency of any kind (S5, S6).
 
 ## Known limits

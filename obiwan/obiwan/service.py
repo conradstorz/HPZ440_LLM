@@ -3,6 +3,7 @@ reads them from a caller. Every response that returns knowledge also returns cov
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -105,19 +106,22 @@ class Service:
         a changed file is a new version and is tried fresh. The failed work row stays, raw, in /status."""
         if not (reason or "").strip():
             raise ValueError("reason is required to exclude")
-        latest = self._live_latest(subject_id)
-        if self.record.exclusion_for(latest.doc_id) is not None:
-            raise ValueError(f"version {latest.doc_id} is already excluded")
-        n = len(self.record.chunks_for(latest.doc_id))
-        if n:
-            raise ValueError(f"version {latest.doc_id} has {n} chunks; only a version with no chunks and a failed extract can be excluded")
-        item = self.work.item_for("extract", latest.doc_id)
-        state = item.state if item else None
-        if item is None or state != "failed":
-            raise ValueError(f"version {latest.doc_id} cannot be excluded: its extract work is {state!r}, not 'failed'")
         now = self._now()
-        with self.record.transaction():
-            exc = self.record.add_exclusion(doc_id=latest.doc_id, reason=reason, ordered_by=role, created_at=now)
+        with self.record.transaction():  # checks and insert under one write lock: a concurrent exclude cannot slip between them
+            latest = self._live_latest(subject_id)
+            if self.record.exclusion_for(latest.doc_id) is not None:
+                raise ValueError(f"version {latest.doc_id} is already excluded")
+            n = len(self.record.chunks_for(latest.doc_id))
+            if n:
+                raise ValueError(f"version {latest.doc_id} has {n} chunks; only a version with no chunks and a failed extract can be excluded")
+            item = self.work.item_for("extract", latest.doc_id)
+            state = item.state if item else None
+            if item is None or state != "failed":
+                raise ValueError(f"version {latest.doc_id} cannot be excluded: its extract work is {state!r}, not 'failed'")
+            try:
+                exc = self.record.add_exclusion(doc_id=latest.doc_id, reason=reason, ordered_by=role, created_at=now)
+            except sqlite3.IntegrityError as e:
+                raise ValueError(f"version {latest.doc_id} is already excluded") from e
             self.record.add_event("exclusion", role=role, payload={"subject_id": subject_id, "doc_id": latest.doc_id, "reason": reason,
                                                                    "last_error": item.last_error})
         return {"subject_id": subject_id, "exclusion": exc.model_dump(mode="json")}
@@ -150,7 +154,8 @@ class Service:
             if latest and latest.doc_id == doc_id and self.record.tombstone_for(doc.subject_id) is None and doc_id not in needing:
                 settled.append(doc_id)
         cleared = self.work.clear_failed_index(settled, now=self._now())
-        self.record.add_event("reindex", role=role, payload={"chunks_indexed": n, "index_failures_cleared": cleared})
+        self.record.add_event("reindex", role=role, payload={"chunks_indexed": n, "index_failures_cleared": cleared,
+                                                             "index_failures_cleared_doc_ids": sorted(settled)})
         return {"chunks_indexed": n, "projection": self.projection.state_counts(), "index_failures_cleared": cleared}
 
     # ----- reads -----

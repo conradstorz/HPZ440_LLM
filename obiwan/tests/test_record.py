@@ -302,7 +302,7 @@ def test_missing_migration_step_raises_and_leaves_file(data_dir, monkeypatch):
 # ----- exclusions (v0.1.1): a Commander-ordered, append-only mark on one failed document version -----
 
 def _v1_schema_sql() -> str:
-    """The record exactly as schema 1 shipped it: every table and trigger except exclusions."""
+    """Today's SCHEMA and TRIGGERS minus the exclusions table and its triggers: a stand-in for schema 1, not a byte-for-byte copy of what faf571e shipped."""
     from obiwan.record.schema import EXCLUSIONS_TABLE, SCHEMA, TRIGGERS
     assert EXCLUSIONS_TABLE in SCHEMA
     triggers = "\n".join(line for line in TRIGGERS.splitlines() if " ON exclusions " not in line)
@@ -411,3 +411,25 @@ def test_failed_work_on_a_superseded_or_forgotten_version_does_not_block(record,
     assert record.failed_work_blocking() == 1
     record.add_tombstone(subject_id="f2", reason="r", ordered_by="commander", created_at=T0)
     assert record.failed_work_blocking() == 0  # forgotten
+
+
+def test_an_excluded_document_with_chunks_cannot_make_an_unindexed_one_look_complete(record):
+    excluded = _source_doc(record, "f1", "h1")
+    record.add_chunks(excluded.doc_id, [ChunkSpec(0, 0, 1, "a")])
+    record.conn.execute("INSERT INTO projection(chunk_id, kind, state) VALUES (?, 'fts', 'current')", (f"{excluded.doc_id}-0",))
+    other = _source_doc(record, "f2", "h2")
+    record.add_chunks(other.doc_id, [ChunkSpec(0, 0, 1, "b")])  # chunked but never indexed
+    record.add_exclusion(doc_id=excluded.doc_id, reason="r", ordered_by="commander", created_at=T0)
+    cov = record.coverage_counts()
+    assert cov["documents"] - cov["documents_excluded"] == 1
+    assert cov["documents_indexed"] == 0 and cov["chunks"] == 1 and cov["chunks_indexed"] == 0
+
+
+def test_a_failed_extract_on_a_document_that_has_chunks_does_not_block(record):
+    d = _source_doc(record, "f1", "h1")
+    _failed(record, "extract", d.doc_id)
+    assert record.failed_work_blocking() == 1
+    record.add_chunks(d.doc_id, [ChunkSpec(0, 0, 1, "a")])
+    assert record.failed_work_blocking() == 0
+    _failed(record, "index", d.doc_id)
+    assert record.failed_work_blocking() == 1

@@ -319,10 +319,12 @@ class Record:
         """S10: how much of the latest, non-forgotten record is searchable right now."""
         q = self.conn.execute
         documents = q(self._LATEST_LIVE + "SELECT count(*) FROM latest").fetchone()[0]
-        chunks = q(self._LATEST_LIVE + "SELECT count(*) FROM chunks c JOIN latest l ON l.doc_id = c.doc_id").fetchone()[0]
-        chunks_indexed = q(self._LATEST_LIVE + "SELECT count(*) FROM chunks c JOIN latest l ON l.doc_id = c.doc_id "
+        # Indexed counts are over the counted set (latest, live, not excluded), so `documents - documents_excluded` and
+        # `documents_indexed` compare like with like.
+        chunks = q(self._COUNTED + "SELECT count(*) FROM chunks c JOIN counted l ON l.doc_id = c.doc_id").fetchone()[0]
+        chunks_indexed = q(self._COUNTED + "SELECT count(*) FROM chunks c JOIN counted l ON l.doc_id = c.doc_id "
                            "JOIN projection p ON p.chunk_id = c.chunk_id AND p.kind = 'fts' AND p.state = 'current'").fetchone()[0]
-        documents_indexed = q(self._LATEST_LIVE + "SELECT count(*) FROM latest l WHERE EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = l.doc_id) "
+        documents_indexed = q(self._COUNTED + "SELECT count(*) FROM counted l WHERE EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = l.doc_id) "
                               "AND NOT EXISTS (SELECT 1 FROM chunks c LEFT JOIN projection p ON p.chunk_id = c.chunk_id AND p.kind = 'fts' "
                               "WHERE c.doc_id = l.doc_id AND (p.state IS NULL OR p.state != 'current'))").fetchone()[0]
         tombstoned = q("SELECT count(DISTINCT subject_id) FROM tombstones").fetchone()[0]
@@ -337,6 +339,9 @@ class Record:
 
     def failed_work_blocking(self) -> int:
         """Failed work rows whose target is a latest, live, non-excluded document: the failures that keep coverage from
-        being complete. A failed row for a superseded, forgotten or excluded version is still listed raw by /status."""
+        being complete. A failed row for a superseded, forgotten or excluded version is still listed raw by /status. A failed
+        extract row on a document that now has chunks does not block: index repair owns that case, and a projection that is
+        not current is caught by the documents_indexed comparison."""
         return self.conn.execute(self._COUNTED + "SELECT count(*) FROM work w WHERE w.state = 'failed' "
-                                 "AND w.target IN (SELECT doc_id FROM counted)").fetchone()[0]
+                                 "AND w.target IN (SELECT doc_id FROM counted) "
+                                 "AND NOT (w.kind = 'extract' AND EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = w.target))").fetchone()[0]
