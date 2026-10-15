@@ -75,3 +75,17 @@ def test_a_reclaimed_item_whose_chunks_already_exist_does_not_duplicate_them(wor
     n = len(r.chunks_for(doc.doc_id))
     rep = drain(record=r, work=w, projection=p, roots={"corpus": corpus}, settings=settings, now=T0 + timedelta(seconds=2))
     assert rep.completed == 3 and len(r.chunks_for(doc.doc_id)) == n
+
+
+def test_a_path_that_escapes_the_root_fails_with_a_dedicated_reason_and_nothing_is_read(world, settings, corpus, monkeypatch):
+    import obiwan.worker as wk
+    def no_read(*a, **k):
+        raise AssertionError("must not read an escaping path")
+    monkeypatch.setattr(wk, "sha256_file", no_read)
+    monkeypatch.setattr(wk, "extract_text", no_read)
+    monkeypatch.setattr(wk, "is_contained", lambda p, r: False)
+    r, w, p = world
+    rep = drain(record=r, work=w, projection=p, roots={"corpus": corpus}, settings=settings, now=T0)
+    assert rep.completed == 0 and rep.postponed + rep.failed == 3
+    assert all(e.startswith("PathEscapesRoot") for e in rep.errors)
+    assert r.coverage_counts()["chunks"] == 0

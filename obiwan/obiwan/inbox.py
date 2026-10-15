@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from obiwan.chunking import chunk_text
 from obiwan.core.config import RESERVED_ROOT, Settings
 from obiwan.core.ids import sha256_file
+from obiwan.core.paths import PathEscapesRoot, is_contained
 from obiwan.extract import ExtractionError, extract_text, is_supported, media_type_for
 from obiwan.projection import FtsProjection
 from obiwan.record import Record
@@ -69,6 +70,8 @@ def process_inbox(inbox: Inbox, *, record: Record, projection: FtsProjection, se
     report = InboxReport()
     for p in inbox.pending():
         try:
+            if not is_contained(p, inbox.path):  # the link itself is moved to failed/, never its target
+                raise PathEscapesRoot(f"{p.name} resolves outside the inbox; nothing was read")
             if not is_supported(p):
                 raise ExtractionError(f"unsupported file type {p.suffix!r}")
             size = p.stat().st_size

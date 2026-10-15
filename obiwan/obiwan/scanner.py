@@ -12,6 +12,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from obiwan.core.ids import sha256_file
+from obiwan.core.paths import is_contained
 from obiwan.extract import is_supported, media_type_for
 from obiwan.record import Record
 from obiwan.work import WorkQueue
@@ -30,17 +31,24 @@ class RootReport(BaseModel):
     duplicates: int = 0
     skipped_unsupported: int = 0
     skipped_large: int = 0
+    skipped_outside: int = 0
     errors: list[str] = Field(default_factory=list)
 
 
-def discover(root_path: Path, *, max_file_bytes: int) -> tuple[list[tuple[Path, int]], int, int, list[str]]:
+def discover(root_path: Path, *, max_file_bytes: int) -> tuple[list[tuple[Path, int]], int, int, list[str], int]:
     """Supported, size-bounded regular files under the root, sorted for determinism, paired with their size.
     Raises OSError if the root itself cannot be listed. A per-file stat failure (including the is_file() check)
-    is caught, recorded in the returned errors, and that file is skipped rather than aborting the whole root."""
-    paths, unsupported, large, errors = [], 0, 0, []
+    is caught, recorded in the returned errors, and that file is skipped rather than aborting the whole root.
+    A file whose resolved path escapes the root (a symlink out) is skipped, counted, and named in errors; the
+    last element of the result is that count."""
+    paths, unsupported, large, errors, outside = [], 0, 0, [], 0
     for x in sorted(root_path.rglob("*")):
         try:
             if not x.is_file():
+                continue
+            if not is_contained(x, root_path):
+                outside += 1
+                errors.append(f"{x.relative_to(root_path).as_posix()}: resolves outside the root; skipped")
                 continue
             if not is_supported(x):
                 unsupported += 1
@@ -53,7 +61,7 @@ def discover(root_path: Path, *, max_file_bytes: int) -> tuple[list[tuple[Path, 
             large += 1
         else:
             paths.append((x, size))
-    return paths, unsupported, large, errors
+    return paths, unsupported, large, errors, outside
 
 
 def _resolve(record: Record, work: WorkQueue, *, name: str, rel: str, digest: str, size: int, mtime: str, media_type: str,
@@ -101,7 +109,7 @@ def scan_root(name: str, root_path: Path, *, record: Record, work: WorkQueue, sc
         report.error = "root not reachable"
         return report  # S11: a gap, reported. Nothing is marked deleted because a mount was absent.
     try:
-        paths, report.skipped_unsupported, report.skipped_large, errors = discover(root_path, max_file_bytes=max_file_bytes)
+        paths, report.skipped_unsupported, report.skipped_large, errors, report.skipped_outside = discover(root_path, max_file_bytes=max_file_bytes)
     except OSError as e:
         report.error = f"{type(e).__name__}: {e}"
         return report
@@ -110,6 +118,10 @@ def scan_root(name: str, root_path: Path, *, record: Record, work: WorkQueue, sc
     on_disk = {p.relative_to(root_path).as_posix() for p, _size in paths}
     for p, size in paths:
         rel = p.relative_to(root_path).as_posix()
+        if not is_contained(p, root_path):  # swapped for a symlink since discovery: read nothing
+            report.skipped_outside += 1
+            report.errors.append(f"{rel}: resolves outside the root; skipped")
+            continue
         try:
             st = p.stat()
             digest = sha256_file(p)

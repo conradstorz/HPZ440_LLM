@@ -151,3 +151,63 @@ def test_two_identical_files_moved_together_both_keep_their_identity(world, corp
     moved = {r.latest_sighting(d.subject_id).path for d in r.latest_documents()}
     assert {"archive/zebra.md", "archive/zebra-copy.md"} <= moved
     assert {ids_before["zebra.md"], ids_before["zebra-copy.md"]} == {d.subject_id for d in r.latest_documents() if r.latest_sighting(d.subject_id).path.startswith("archive/")}
+
+
+def _symlink_or_skip(link, target, directory=False):
+    import os
+    try:
+        os.symlink(target, link, target_is_directory=directory)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+
+def test_a_file_symlink_pointing_outside_the_root_is_skipped_and_counted(world, corpus, tmp_path):
+    outside = tmp_path / "outside.md"
+    outside.write_text("secret outside the root\n", encoding="utf-8")
+    _symlink_or_skip(corpus / "escape.md", outside)
+    rep = _scan(world, corpus, "s1")
+    assert rep.seen == 3 and rep.skipped_outside == 1
+    assert any(e.startswith("escape.md") for e in rep.errors)
+    assert "escape.md" not in {world[0].latest_sighting(d.subject_id).path for d in world[0].latest_documents()}
+
+
+def test_a_file_symlink_pointing_inside_the_root_is_accepted(world, corpus):
+    _symlink_or_skip(corpus / "alias.md", corpus / "zebra.md")
+    rep = _scan(world, corpus, "s1")
+    assert rep.skipped_outside == 0 and rep.seen == 4
+
+
+def test_a_directory_symlink_pointing_outside_contributes_no_files(world, corpus, tmp_path):
+    out = tmp_path / "outdir"
+    out.mkdir()
+    (out / "x.md").write_text("outside\n", encoding="utf-8")
+    _symlink_or_skip(corpus / "linkdir", out, directory=True)
+    rep = _scan(world, corpus, "s1")
+    assert rep.seen == 3 and rep.skipped_outside == 0
+
+
+def test_discover_skips_a_file_the_containment_check_rejects(world, corpus, monkeypatch):
+    """Windows-safe wiring test: no symlink needed."""
+    import obiwan.scanner as sc
+    real = sc.is_contained
+    monkeypatch.setattr(sc, "is_contained", lambda p, r: False if p.name == "zebra.md" else real(p, r))
+    rep = _scan(world, corpus, "s1")
+    assert rep.skipped_outside == 1 and rep.seen == 2
+    assert any(e.startswith("zebra.md") for e in rep.errors)
+
+
+def test_scan_root_rechecks_containment_just_before_reading(world, corpus, monkeypatch):
+    """A file swapped for a symlink after discovery: discovery passes, the re-check fails, nothing is read."""
+    import obiwan.scanner as sc
+    real = sc.is_contained
+    calls = {"zebra.md": 0}
+
+    def flaky(p, r):
+        if p.name == "zebra.md":
+            calls["zebra.md"] += 1
+            return calls["zebra.md"] == 1
+        return real(p, r)
+    monkeypatch.setattr(sc, "is_contained", flaky)
+    rep = _scan(world, corpus, "s1")
+    assert rep.seen == 2 and rep.skipped_outside == 1
+    assert any(e.startswith("zebra.md") for e in rep.errors)
