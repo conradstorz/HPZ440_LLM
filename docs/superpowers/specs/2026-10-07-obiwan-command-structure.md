@@ -1,5 +1,5 @@
-> Snapshot taken 2026-10-07 from `jarvis-obiwan-research/00-obiwan-design/`, the design workspace. This copy is the
-> version this repository implements.
+> Snapshot taken 2026-10-07 from `jarvis-obiwan-research/00-obiwan-design/`, the design workspace, re-snapshotted
+> 2026-10-15 for v0.1.1 (P6 exclusion, P1 reserved). This copy is the version this repository implements.
 
 # Command Structure: Duties, Powers, and Safeguards
 
@@ -62,8 +62,11 @@ The Historian is not trusted more than the Admiral. It is trusted differently. I
 | P3 | Approve an outbound action by the Admiral |
 | P4 | Order a record forgotten |
 | P5 | Amend any actor's powers |
+| P6 | Exclude a document version that failed extraction from coverage, with a reason |
 
-No actor may exercise P1 through P5. No actor acquires one by asking, by relaying a request, or by acting in the Commander's name. An attempt is refused and journaled as a refusal, not silently downgraded.
+P1 is reserved in v0.1: a `direct` record exists only by promotion under P2. P6 was added in v0.1.1.
+
+No actor may exercise P1 through P6. No actor acquires one by asking, by relaying a request, or by acting in the Commander's name. An attempt is refused and journaled as a refusal, not silently downgraded.
 
 ---
 
@@ -244,6 +247,8 @@ The Admiral journals what it submitted and what it searched. The Historian journ
 ### S10 Coverage is reported
 
 Every retrieval response states how much of the corpus was searchable: documents indexed, chunks indexed, work pending, work failed.
+
+A document the Historian cannot read is counted as failed until the Commander excludes it under P6. An exclusion is an append-only record naming the version, the reason, and who ordered it, and coverage reports it as excluded rather than hiding it. Exclusion applies to one version: a changed file is a new version and is tried fresh.
 
 *Why.* A partial index that looks complete produces confident wrong answers.
 *Enforced.* Historian search response envelope. *v0.1.*
