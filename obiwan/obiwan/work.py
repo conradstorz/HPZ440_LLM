@@ -38,6 +38,34 @@ class WorkQueue:
                 "VALUES (?, ?, 'pending', 0, ?, ?, ?)", (kind, target, now.isoformat(), now.isoformat(), now.isoformat()))
             return cur.rowcount == 1
 
+    def requeue(self, kind: str, target: str, *, now: datetime) -> bool:
+        """Insert as pending, or reset a done row so it runs again. Pending, leased and failed rows are left alone:
+        a terminal failure stays visible until /reindex settles it (clear_failed_index)."""
+        n = now.isoformat()
+        with self._record.transaction():
+            cur = self._conn.execute(
+                "INSERT INTO work(kind, target, state, attempts, next_attempt_at, created_at, updated_at) VALUES (?, ?, 'pending', 0, ?, ?, ?) "
+                "ON CONFLICT(kind, target) DO UPDATE SET state = 'pending', attempts = 0, last_error = NULL, lease_until = NULL, "
+                "next_attempt_at = excluded.next_attempt_at, updated_at = excluded.updated_at WHERE work.state = 'done'",
+                (kind, target, n, n, n))
+            return cur.rowcount == 1
+
+    def item_for(self, kind: str, target: str) -> WorkItem | None:
+        row = self._conn.execute("SELECT * FROM work WHERE kind = ? AND target = ?", (kind, target)).fetchone()
+        return WorkItem.model_validate(dict(row)) if row else None
+
+    def failed_index_targets(self) -> list[str]:
+        return [r[0] for r in self._conn.execute("SELECT target FROM work WHERE kind = 'index' AND state = 'failed'").fetchall()]
+
+    def clear_failed_index(self, targets: list[str], *, now: datetime) -> int:
+        """Mark failed index rows done once their document is current again (operational UPDATE; last_error is kept)."""
+        with self._record.transaction():
+            n = 0
+            for t in targets:
+                n += self._conn.execute("UPDATE work SET state = 'done', updated_at = ? WHERE kind = 'index' AND target = ? AND state = 'failed'",
+                                        (now.isoformat(), t)).rowcount
+            return n
+
     _CLAIMABLE = "((state = 'pending' AND next_attempt_at <= :now) OR (state = 'leased' AND lease_until <= :now))"
 
     def claim(self, *, now: datetime, lease_seconds: int) -> WorkItem | None:

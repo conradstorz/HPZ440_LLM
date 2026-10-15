@@ -29,19 +29,27 @@ def test_each_command_uses_the_least_credential_it_needs(calls, capsys):
     assert cli.main(["status"]) == 0
     assert cli.main(["confirm", "abc"]) == 0
     assert cli.main(["forget", "abc", "--reason", "wrong"]) == 0
+    assert cli.main(["exclude", "abc", "--reason", "unreadable"]) == 0
     assert calls == [
         ("POST", "/scan", "Bearer w", None),
         ("POST", "/reindex", "Bearer w", None),
         ("GET", "/status", "Bearer r", None),
         ("POST", "/confirm", "Bearer c", {"subject_id": "abc", "action": "promote"}),
         ("POST", "/confirm", "Bearer c", {"subject_id": "abc", "action": "forget", "reason": "wrong"}),
+        ("POST", "/confirm", "Bearer c", {"subject_id": "abc", "action": "exclude", "reason": "unreadable"}),
     ]
-    assert capsys.readouterr().out.count('"ok": true') == 5
+    assert capsys.readouterr().out.count('"ok": true') == 6
 
 
 def test_forget_requires_a_reason(calls):
     with pytest.raises(SystemExit):
         cli.main(["forget", "abc"])
+
+
+def test_exclude_requires_a_reason(calls):
+    with pytest.raises(SystemExit):
+        cli.main(["exclude", "abc"])
+    assert calls == []
 
 
 def test_a_refusal_is_reported_not_swallowed(monkeypatch, capsys):

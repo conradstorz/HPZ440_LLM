@@ -132,3 +132,35 @@ def test_an_interrupted_move_is_completed_on_the_next_scan(world, inbox_dir, set
     assert dest.is_file() and not (inbox_dir / "a.md").exists()
     assert len(r.latest_documents()) == 2  # no new document was created, still exactly two
     assert r.events(limit=1)[0].kind == "inbox_move_completed"
+
+
+def test_a_pending_entry_escaping_the_inbox_is_failed_never_read(world, inbox_dir, settings, tmp_path, monkeypatch):
+    import obiwan.inbox as ib
+    r, p, box = world
+    (inbox_dir / "memo.md").write_text("inside\n", encoding="utf-8")
+    monkeypatch.setattr(ib, "is_contained", lambda path, root: False)
+    def no_read(*a, **k):
+        raise AssertionError("must not read an escaping entry")
+    monkeypatch.setattr(ib, "sha256_file", no_read)
+    monkeypatch.setattr(ib, "extract_text", no_read)
+    rep = process_inbox(box, record=r, projection=p, settings=settings, scan_id="s1", now=T0)
+    assert (rep.recorded, rep.failed) == (0, 1)
+    assert (inbox_dir / "failed" / "memo.md").is_file()
+    err = json.loads((inbox_dir / "failed" / "memo.md.error.json").read_text(encoding="utf-8"))
+    assert err["error"].startswith("PathEscapesRoot")
+    assert r.latest_documents() == []
+
+
+def test_a_symlink_in_the_inbox_pointing_outside_moves_the_link_not_the_target(world, inbox_dir, settings, tmp_path):
+    import os
+    r, p, box = world
+    outside = tmp_path / "outside.md"
+    outside.write_text("secret\n", encoding="utf-8")
+    try:
+        os.symlink(outside, inbox_dir / "link.md")
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    rep = process_inbox(box, record=r, projection=p, settings=settings, scan_id="s1", now=T0)
+    assert (rep.recorded, rep.failed) == (0, 1)
+    assert (inbox_dir / "failed" / "link.md").is_symlink() and outside.read_text(encoding="utf-8") == "secret\n"
+    assert r.latest_documents() == []

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from obiwan.chunking import chunk_text
 from obiwan.core.config import Settings
 from obiwan.core.ids import sha256_file
+from obiwan.core.paths import PathEscapesRoot, is_contained
 from obiwan.extract import extract_text
 from obiwan.projection import FtsProjection
 from obiwan.record import Record
@@ -33,12 +34,17 @@ class WorkReport(BaseModel):
 
 def process_item(item: WorkItem, *, record: Record, projection: FtsProjection, roots: dict[str, Path], settings: Settings,
                  now: datetime) -> None:
-    if item.kind != "extract":
+    if item.kind not in ("extract", "index"):
         raise RuntimeError(f"unknown work kind {item.kind!r}")
     doc = record.document(item.target)
     if doc is None:
         raise RuntimeError(f"document {item.target} is not in the record")
     chunks = record.chunks_for(doc.doc_id)
+    if item.kind == "index":  # projection repair from stored chunks only; the extract item owns the no-chunks case
+        if not chunks:
+            raise RuntimeError(f"document {doc.doc_id} has no chunks to index; its extract item owns that case")
+        projection.index_document(doc, chunks, now=now)
+        return
     if not chunks:  # a reclaimed item may have died between add_chunks and complete(); never write them twice
         sighting = record.latest_sighting(doc.subject_id)
         if sighting is None:
@@ -47,6 +53,8 @@ def process_item(item: WorkItem, *, record: Record, projection: FtsProjection, r
         if root_path is None or not Path(root_path).is_dir():
             raise RootUnavailable(f"root {sighting.root!r} is not reachable")
         path = Path(root_path) / sighting.path
+        if not is_contained(path, Path(root_path)):
+            raise PathEscapesRoot(f"{sighting.root}:{sighting.path} resolves outside the root; nothing was read")
         if not path.is_file():
             raise RootUnavailable(f"{sighting.root}:{sighting.path} is not present; a later scan will relocate it")
         if sha256_file(path) != doc.content_hash:

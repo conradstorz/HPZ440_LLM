@@ -78,6 +78,12 @@ class FtsProjection:
             self._set_state(ids, "stale", reason="superseded", now=now)
             return
         ids = [c.chunk_id for c in chunks]
+        if self._record.tombstone_for(doc.subject_id) is not None:
+            # Forgotten (P4): a late extract or index item must never resurrect it.
+            self._remove(ids)
+            self._conn.commit()
+            self._set_state(ids, "stale", reason="forgotten", now=now)
+            return
         self._remove(ids)
         self._conn.executemany("INSERT INTO chunks_fts(chunk_id, text) VALUES (?, ?)", [(c.chunk_id, c.text) for c in chunks])
         self._conn.commit()

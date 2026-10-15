@@ -185,3 +185,224 @@ def test_status_and_journal(svc, inbox_dir):
     assert st["last_scan"]["inbox"]["recorded"] == 1 and st["projection"] == {"current": st["coverage"]["chunks"]}
     kinds = [e["kind"] for e in svc.journal(limit=50)]
     assert "inbox_failed" in kinds and "inbox_recorded" in kinds and kinds[0] == "scan"
+
+
+def test_scan_repairs_one_documents_projection_without_touching_others_or_sources(svc, monkeypatch):
+    svc.scan(role="writer")
+    docs = svc.record.latest_documents()
+    victim, others = docs[0], docs[1:]
+    q = svc.record.conn.execute
+
+    def built(doc_id):
+        return q("SELECT p.chunk_id, p.built_at, p.state FROM projection p JOIN chunks c ON c.chunk_id = p.chunk_id "
+                 "WHERE c.doc_id = ? AND p.kind = 'fts' ORDER BY p.chunk_id", (doc_id,)).fetchall()
+
+    before_others = {d.doc_id: [tuple(r) for r in built(d.doc_id)] for d in others}
+
+    def break_it():
+        ids = [c.chunk_id for c in svc.record.chunks_for(victim.doc_id)]
+        with svc.record.transaction():
+            svc.record.conn.executemany("UPDATE projection SET state = 'stale', reason = 'test', built_at = NULL WHERE chunk_id = ? AND kind = 'fts'",
+                                        [(i,) for i in ids])
+        svc.projection._remove(ids)
+        svc.projection._conn.commit()
+        assert svc.record.documents_needing_index() == [victim.doc_id]
+
+    def no_source(*a, **k):
+        raise AssertionError("a source file was read")
+
+    monkeypatch.setattr("obiwan.worker.extract_text", no_source)
+    for i in (1, 2):  # the second break proves requeue resets a done item
+        break_it()
+        svc._now = lambda t=T0 + timedelta(hours=i): t
+        rep = svc.scan(role="writer")
+        assert rep["repairs_enqueued"] == 1
+        assert [r[2] for r in built(victim.doc_id)] == ["current"] * len(built(victim.doc_id))
+        assert svc.record.documents_needing_index() == []
+        assert {d.doc_id: [tuple(r) for r in built(d.doc_id)] for d in others} == before_others
+    victim_ids = {c.chunk_id for c in svc.record.chunks_for(victim.doc_id)}
+    in_fts = {r[0] for r in svc.projection._conn.execute("SELECT chunk_id FROM chunks_fts")}
+    assert victim_ids <= in_fts
+    # The victim is random (doc ids order latest_documents); zebra.md opens with "#", which FTS cannot match.
+    word = next(w for w in svc.record.chunks_for(victim.doc_id)[0].text.split() if w.isalnum())
+    assert victim_ids & {r["chunk_id"] for r in svc.search(word, k=25)["results"]}
+    assert svc.scan(role="writer")["repairs_enqueued"] == 0
+
+
+def test_a_terminal_index_failure_stays_visible_until_reindex_settles_it(svc):
+    svc.scan(role="writer")
+    victim = svc.record.latest_documents()[0]
+    ids = [c.chunk_id for c in svc.record.chunks_for(victim.doc_id)]
+    with svc.record.transaction():
+        svc.record.conn.executemany("UPDATE projection SET state = 'stale', reason = 'test', built_at = NULL WHERE chunk_id = ? AND kind = 'fts'",
+                                    [(i,) for i in ids])
+    svc.projection._remove(ids)
+    svc.projection._conn.commit()
+    svc.work.requeue("index", victim.doc_id, now=T0)
+    item = svc.work.claim(now=T0, lease_seconds=60)
+    assert svc.work.fail(item.id, "RuntimeError: boom", now=T0, max_attempts=1) is True
+    rep = svc.scan(role="writer")
+    assert rep["repairs_enqueued"] == 0  # a failed row is not revived by the sweep
+    failed = svc.work.failed()
+    assert [(w.kind, w.last_error) for w in failed] == [("index", "RuntimeError: boom")]
+    cov = svc.coverage()
+    assert cov["documents_failed"] == 1 and cov["complete"] is False
+    out = svc.reindex(role="writer")
+    assert out["index_failures_cleared"] == 1
+    payload = svc.record.events(limit=1)[0].payload
+    assert payload["index_failures_cleared"] == 1 and payload["index_failures_cleared_doc_ids"] == [victim.doc_id]
+    cov = svc.coverage()
+    assert cov["documents_failed"] == 0 and cov["complete"] is True
+
+
+# ----- exclusion (v0.1.1): the Commander takes a permanently failed version out of coverage -----
+
+@pytest.fixture
+def breakable(svc, corpus, monkeypatch):
+    """A corpus with broken.md, whose extraction fails while broken["on"] is true; fail_terminally() exhausts its attempts."""
+    import obiwan.worker as worker
+    real = worker.extract_text
+    broken = {"on": True}
+
+    def extract(path, **kw):
+        if broken["on"] and path.name == "broken.md":
+            raise RuntimeError("unreadable")
+        return real(path, **kw)
+
+    monkeypatch.setattr(worker, "extract_text", extract)
+    (corpus / "broken.md").write_text("first broken words\n", encoding="utf-8", newline="\n")
+    clock = [T0]
+    svc._now = lambda: clock[0]
+
+    def scan():
+        rep = svc.scan(role="writer")
+        clock[0] = clock[0] + timedelta(days=2)
+        return rep
+
+    def fail_terminally():
+        for _ in range(svc.settings.max_attempts):
+            scan()
+
+    broken["scan"], broken["fail_terminally"] = scan, fail_terminally
+    return broken
+
+
+def _subject_at(svc, path):
+    return svc.record.latest_sighting_at("corpus", path).file_id
+
+
+def test_exclude_a_terminally_failed_document_and_a_changed_file_is_tried_fresh(svc, corpus, breakable):
+    breakable["fail_terminally"]()
+    cov = svc.coverage()
+    assert (cov["complete"], cov["documents_failed"], cov["documents_excluded"], cov["work_failed"]) == (False, 1, 0, 1)
+    sid = _subject_at(svc, "broken.md")
+    bad = svc.record.latest_document(sid)
+    out = svc.exclude(subject_id=sid, reason="scanner output is garbage", role="commander")
+    assert out["subject_id"] == sid and out["exclusion"]["doc_id"] == bad.doc_id and out["exclusion"]["ordered_by"] == "commander"
+    assert svc.record.exclusion_for(bad.doc_id).reason == "scanner output is garbage"
+    ev = svc.record.events(limit=1)[0]
+    assert ev.kind == "exclusion" and ev.role == "commander"
+    assert ev.payload == {"subject_id": sid, "doc_id": bad.doc_id, "reason": "scanner output is garbage",
+                          "last_error": "RuntimeError: unreadable"}
+    cov = svc.coverage()
+    assert (cov["complete"], cov["documents_failed"], cov["documents_excluded"]) == (True, 0, 1)
+    assert cov["work_failed"] == 1  # nothing is hidden: the raw failed row is still counted and listed
+    assert [(w.kind, w.target) for w in svc.work.failed()] == [("extract", bad.doc_id)]
+    assert [w["target"] for w in svc.status()["work_failed"]] == [bad.doc_id]
+    # The file changes: a new version, not excluded, extracted fresh.
+    breakable["on"] = False
+    (corpus / "broken.md").write_text("second readable words\n", encoding="utf-8", newline="\n")
+    breakable["scan"]()
+    new = svc.record.latest_document(sid)
+    assert new.doc_id != bad.doc_id and new.version_no == 2 and svc.record.exclusion_for(new.doc_id) is None
+    assert svc.record.chunks_for(new.doc_id)
+    assert svc.search("readable", k=5)["results"][0]["doc_id"] == new.doc_id
+    cov = svc.coverage()
+    assert (cov["complete"], cov["documents_failed"], cov["documents_excluded"], cov["work_failed"]) == (True, 0, 0, 1)
+
+
+def test_a_failed_extract_on_a_superseded_version_does_not_pin_complete(svc, corpus, breakable):
+    breakable["fail_terminally"]()
+    assert svc.coverage()["complete"] is False
+    breakable["on"] = False
+    (corpus / "broken.md").write_text("now it reads\n", encoding="utf-8", newline="\n")
+    breakable["scan"]()
+    cov = svc.coverage()
+    assert cov["work_failed"] == 1 and cov["documents_failed"] == 0
+    assert cov["complete"] is True
+
+
+def test_exclude_refusals(svc, breakable):
+    breakable["fail_terminally"]()
+    sid = _subject_at(svc, "broken.md")
+    indexed = _subject_at(svc, "zebra.md")
+    with pytest.raises(ValueError, match="no chunks"):
+        svc.exclude(subject_id=indexed, reason="r", role="commander")
+    for reason in ("", "   "):
+        with pytest.raises(ValueError, match="reason"):
+            svc.exclude(subject_id=sid, reason=reason, role="commander")
+    with pytest.raises(KeyError):
+        svc.exclude(subject_id="no-such-subject", reason="r", role="commander")
+    svc.exclude(subject_id=sid, reason="r", role="commander")
+    with pytest.raises(ValueError, match="already excluded"):
+        svc.exclude(subject_id=sid, reason="again", role="commander")
+    svc.forget(subject_id=sid, reason="gone", role="commander")
+    with pytest.raises(ValueError, match="forgotten"):
+        svc.exclude(subject_id=sid, reason="r", role="commander")
+    assert len(svc.record.events(limit=100, kind="exclusion")) == 1
+
+
+def test_exclude_refuses_a_version_whose_extract_has_not_failed_terminally(svc, breakable):
+    breakable["scan"]()  # one attempt: the extract row is pending again, not failed
+    sid = _subject_at(svc, "broken.md")
+    with pytest.raises(ValueError, match="extract work is 'pending', not 'failed'"):
+        svc.exclude(subject_id=sid, reason="r", role="commander")
+    sub = svc.submit(content="a machine note", title=None, role="writer")
+    with pytest.raises(ValueError, match="no chunks"):
+        svc.exclude(subject_id=sub["subject_id"], reason="r", role="commander")
+    assert svc.record.events(limit=100, kind="exclusion") == []
+
+
+def test_a_concurrent_exclude_that_loses_the_race_is_a_409_style_value_error_not_an_integrity_error(svc, breakable, monkeypatch):
+    breakable["fail_terminally"]()
+    sid = _subject_at(svc, "broken.md")
+    svc.exclude(subject_id=sid, reason="first", role="commander")
+    with pytest.raises(ValueError, match="already excluded"):
+        svc.exclude(subject_id=sid, reason="second", role="commander")
+    # The racing caller passed the pre-check before the winner committed: the unique key still refuses it.
+    monkeypatch.setattr(svc.record, "exclusion_for", lambda doc_id: None)
+    with pytest.raises(ValueError, match="already excluded"):
+        svc.exclude(subject_id=sid, reason="third", role="commander")
+    assert len(svc.record.events(limit=100, kind="exclusion")) == 1
+
+
+def test_a_failed_extract_on_a_document_that_later_became_fully_indexed_does_not_pin_complete(svc, corpus, monkeypatch):
+    (corpus / "late.md").write_text("late words here\n", encoding="utf-8", newline="\n")
+    real = svc.projection.index_document
+    broken = {"on": True}
+
+    def index_document(doc, chunks, *, now):
+        if broken["on"] and doc.title == "late.md":
+            raise RuntimeError("index down")
+        return real(doc, chunks, now=now)
+
+    monkeypatch.setattr(svc.projection, "index_document", index_document)
+    # Only the extract item hits the broken projection: the repair sweep is held off until the projection is back.
+    real_needing = svc.record.documents_needing_index
+    monkeypatch.setattr(svc.record, "documents_needing_index", lambda: [])
+    clock = [T0]
+    svc._now = lambda: clock[0]
+    for _ in range(svc.settings.max_attempts):
+        svc.scan(role="writer")
+        clock[0] = clock[0] + timedelta(days=2)
+    late = svc.record.latest_document(_subject_at(svc, "late.md"))
+    assert svc.record.chunks_for(late.doc_id)
+    assert svc.work.item_for("extract", late.doc_id).state == "failed"
+    assert svc.coverage()["complete"] is False
+    broken["on"] = False
+    monkeypatch.setattr(svc.record, "documents_needing_index", real_needing)
+    assert svc.scan(role="writer")["repairs_enqueued"] == 1  # the repair sweep makes the document current
+    cov = svc.coverage()
+    assert svc.work.item_for("extract", late.doc_id).state == "failed" and cov["work_failed"] == 1  # raw row stays visible
+    assert [w["target"] for w in svc.status()["work_failed"]] == [late.doc_id]
+    assert cov["documents_indexed"] == cov["documents"] and cov["documents_failed"] == 0 and cov["complete"] is True

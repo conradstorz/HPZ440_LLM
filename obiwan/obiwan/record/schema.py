@@ -4,17 +4,24 @@ from __future__ import annotations
 
 ORIGINS = ("source", "human", "machine")
 ATTESTATIONS = ("relayed", "direct")
-APPEND_ONLY = ("files", "sightings", "documents", "texts", "chunks", "tombstones", "events", "powers", "scans")
-SCHEMA_VERSION = 1
+APPEND_ONLY = ("files", "sightings", "documents", "texts", "chunks", "tombstones", "events", "powers", "scans", "exclusions")
+SCHEMA_VERSION = 2
 
-# S12: powers are data. Code asks the table, never a role name.
+# S12: powers are data. Code asks the table, never a role name. exclude is the Commander's alone (v0.1.1).
 _READER = {"search", "read_document", "status", "journal_read"}
 _WRITER = _READER | {"submit", "relay", "scan", "reindex"}
-_COMMANDER = _WRITER | {"confirm", "forget"}
+_COMMANDER = _WRITER | {"confirm", "forget", "exclude"}
 POWERS: dict[str, frozenset[str]] = {"reader": frozenset(_READER), "writer": frozenset(_WRITER), "commander": frozenset(_COMMANDER)}
 
 _ORIGIN_LIST = ", ".join(f"'{o}'" for o in ORIGINS)
 _ATTESTATION_LIST = ", ".join(f"'{a}'" for a in ATTESTATIONS)
+
+# One document version the Commander has taken out of coverage after it failed extraction for good. A changed file is
+# a new version with a new doc_id, so it is never covered by an older exclusion.
+EXCLUSIONS_TABLE = """CREATE TABLE IF NOT EXISTS exclusions (
+  id INTEGER PRIMARY KEY, doc_id TEXT NOT NULL REFERENCES documents(doc_id), reason TEXT NOT NULL, ordered_by TEXT NOT NULL,
+  created_at TEXT NOT NULL, UNIQUE (doc_id)
+);"""
 
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS files (
@@ -65,16 +72,20 @@ CREATE TABLE IF NOT EXISTS projection (
   state TEXT NOT NULL CHECK (state IN ('pending','current','stale','failed')), reason TEXT, built_at TEXT,
   PRIMARY KEY (chunk_id, kind)
 );
+{EXCLUSIONS_TABLE}
 """
 
 
-def _triggers() -> str:
-    out = []
-    for t in APPEND_ONLY:
-        for op in ("UPDATE", "DELETE"):
-            out.append(f"CREATE TRIGGER IF NOT EXISTS {t}_no_{op.lower()} BEFORE {op} ON {t} "
-                       f"BEGIN SELECT RAISE(ABORT, 'append-only: {t}'); END;")
-    return "\n".join(out)
+def _triggers_for(table: str) -> tuple[str, ...]:
+    return tuple(f"CREATE TRIGGER IF NOT EXISTS {table}_no_{op.lower()} BEFORE {op} ON {table} "
+                 f"BEGIN SELECT RAISE(ABORT, 'append-only: {table}'); END;" for op in ("UPDATE", "DELETE"))
 
 
-TRIGGERS = _triggers()
+TRIGGERS = "\n".join(stmt for t in APPEND_ONLY for stmt in _triggers_for(t))
+
+# Migration step N takes a record from schema N-1 to N: a tuple of single SQL statements (a CREATE TRIGGER ... BEGIN ...
+# END; is one statement). Record runs each step in one transaction with its user_version bump and journal event.
+# Record applies SCHEMA + TRIGGERS before the steps, so every statement here must be IF NOT EXISTS.
+MIGRATIONS: dict[int, tuple[str, ...]] = {
+    2: (EXCLUSIONS_TABLE, *_triggers_for("exclusions")),  # v0.1.1: Commander-ordered exclusion of a failed version
+}

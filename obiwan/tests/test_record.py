@@ -70,6 +70,7 @@ def _populate_every_record_table(record):
     record.add_tombstone(subject_id="gone", reason="r", ordered_by="commander", created_at=T0)
     record.add_event("accepted", role="writer", payload={})
     record.add_scan(scan_id="s1", started_at=T0, finished_at=T0, report={})
+    record.add_exclusion(doc_id=d.doc_id, reason="r", ordered_by="commander", created_at=T0)
 
 
 @pytest.mark.parametrize("table", APPEND_ONLY)
@@ -172,6 +173,263 @@ def test_coverage_counts_latest_non_tombstoned_only(record):
     record.add_tombstone(subject_id="f2", reason="r", ordered_by="commander", created_at=T0)
     record.conn.execute("INSERT INTO projection(chunk_id, kind, state) VALUES (?, 'fts', 'current')", (f"{b.doc_id}-0",))
     cov = record.coverage_counts()
-    assert cov == {"documents": 1, "documents_indexed": 0, "chunks": 2, "chunks_indexed": 1, "tombstoned": 1, "documents_failed": 0}
+    assert cov == {"documents": 1, "documents_indexed": 0, "chunks": 2, "chunks_indexed": 1, "tombstoned": 1, "documents_failed": 0,
+                   "documents_excluded": 0}
     record.conn.execute("INSERT INTO projection(chunk_id, kind, state) VALUES (?, 'fts', 'current')", (f"{b.doc_id}-1",))
     assert record.coverage_counts()["documents_indexed"] == 1
+
+
+# ----- schema version check and migration seam -----
+
+def _user_version(path):
+    c = sqlite3.connect(path)
+    try:
+        return c.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        c.close()
+
+
+def _at_version_1(path):
+    """A file the seam tests treat as schema 1: today's shape, stamped 1, so a monkeypatched step 2 is what runs."""
+    Record(path).close()
+    c = sqlite3.connect(path)
+    try:
+        c.execute("PRAGMA user_version = 1")
+    finally:
+        c.close()
+
+
+def test_fresh_record_gets_current_schema_version(data_dir):
+    from obiwan.record.schema import SCHEMA_VERSION
+    r = Record(data_dir / "record.sqlite")
+    r.close()
+    assert _user_version(data_dir / "record.sqlite") == SCHEMA_VERSION
+
+
+def test_reopening_current_version_journals_no_migration(data_dir):
+    Record(data_dir / "record.sqlite").close()
+    r = Record(data_dir / "record.sqlite")
+    try:
+        assert r.events(kind="schema_migrated") == []
+    finally:
+        r.close()
+
+
+def test_newer_record_is_refused_and_left_untouched(data_dir):
+    from obiwan.record.schema import SCHEMA_VERSION
+    path = data_dir / "record.sqlite"
+    Record(path).close()
+    c = sqlite3.connect(path)
+    c.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    c.close()
+    with pytest.raises(RuntimeError, match=rf"schema {SCHEMA_VERSION + 1}.*understands {SCHEMA_VERSION}"):
+        Record(path)
+    assert _user_version(path) == SCHEMA_VERSION + 1
+
+
+def test_older_record_runs_migration_steps_and_journals(data_dir, monkeypatch):
+    import obiwan.record as rec
+    path = data_dir / "record.sqlite"
+    _at_version_1(path)
+    monkeypatch.setattr(rec, "SCHEMA_VERSION", 2)
+    monkeypatch.setattr(rec, "MIGRATIONS", {2: ("CREATE TABLE migrated_probe (x INTEGER)",)})
+    r = Record(path)
+    try:
+        assert r.conn.execute("SELECT name FROM sqlite_master WHERE name = 'migrated_probe'").fetchone() is not None
+        evs = r.events(kind="schema_migrated")
+        assert len(evs) == 1 and evs[0].payload == {"from": 1, "to": 2}
+    finally:
+        r.close()
+    assert _user_version(path) == 2
+    r = Record(path)
+    try:
+        assert len(r.events(kind="schema_migrated")) == 1
+    finally:
+        r.close()
+
+
+def test_failing_step_rolls_back_and_retry_succeeds(data_dir, monkeypatch):
+    import obiwan.record as rec
+    path = data_dir / "record.sqlite"
+    _at_version_1(path)
+    monkeypatch.setattr(rec, "SCHEMA_VERSION", 2)
+    monkeypatch.setattr(rec, "MIGRATIONS", {2: ("CREATE TABLE half_done (x INTEGER)", "THIS IS NOT SQL")})
+    with pytest.raises(sqlite3.Error):
+        Record(path)
+    assert _user_version(path) == 1
+    c = sqlite3.connect(path)
+    try:
+        assert c.execute("SELECT 1 FROM sqlite_master WHERE name = 'half_done'").fetchone() is None
+        assert c.execute("SELECT count(*) FROM events WHERE kind = 'schema_migrated'").fetchone()[0] == 0
+    finally:
+        c.close()
+    monkeypatch.setattr(rec, "MIGRATIONS", {2: ("CREATE TABLE half_done (x INTEGER)",)})
+    r = Record(path)
+    try:
+        assert len(r.events(kind="schema_migrated")) == 1
+    finally:
+        r.close()
+    assert _user_version(path) == 2
+
+
+def test_span_applies_every_step(data_dir, monkeypatch):
+    import obiwan.record as rec
+    path = data_dir / "record.sqlite"
+    _at_version_1(path)
+    monkeypatch.setattr(rec, "SCHEMA_VERSION", 3)
+    monkeypatch.setattr(rec, "MIGRATIONS", {2: ("CREATE TABLE p2 (x INTEGER)",), 3: ("CREATE TABLE p3 (x INTEGER)",)})
+    r = Record(path)
+    try:
+        names = {row[0] for row in r.conn.execute("SELECT name FROM sqlite_master WHERE name IN ('p2', 'p3')")}
+        assert names == {"p2", "p3"}
+        assert sorted((e.payload["from"], e.payload["to"]) for e in r.events(kind="schema_migrated")) == [(1, 2), (2, 3)]
+    finally:
+        r.close()
+    assert _user_version(path) == 3
+
+
+def test_missing_migration_step_raises_and_leaves_file(data_dir, monkeypatch):
+    import obiwan.record as rec
+    path = data_dir / "record.sqlite"
+    _at_version_1(path)
+    monkeypatch.setattr(rec, "SCHEMA_VERSION", 3)
+    monkeypatch.setattr(rec, "MIGRATIONS", {3: ("CREATE TABLE p3 (x INTEGER)",)})
+    with pytest.raises(RuntimeError, match="step 2"):
+        Record(path)
+    assert _user_version(path) == 1
+
+
+# ----- exclusions (v0.1.1): a Commander-ordered, append-only mark on one failed document version -----
+
+def _v1_schema_sql() -> str:
+    """Today's SCHEMA and TRIGGERS minus the exclusions table and its triggers: a stand-in for schema 1, not a byte-for-byte copy of what faf571e shipped."""
+    from obiwan.record.schema import EXCLUSIONS_TABLE, SCHEMA, TRIGGERS
+    assert EXCLUSIONS_TABLE in SCHEMA
+    triggers = "\n".join(line for line in TRIGGERS.splitlines() if " ON exclusions " not in line)
+    return SCHEMA.replace(EXCLUSIONS_TABLE, "") + triggers
+
+
+def test_schema_version_is_2_and_exclude_is_a_commander_only_power():
+    from obiwan.record.schema import MIGRATIONS, SCHEMA_VERSION
+    assert SCHEMA_VERSION == 2 and set(MIGRATIONS) == {2}
+    assert "exclude" in POWERS["commander"]
+    assert "exclude" not in POWERS["writer"] and "exclude" not in POWERS["reader"]
+
+
+def test_a_version_1_record_file_migrates_to_2_with_an_append_only_exclusions_table(data_dir):
+    path = data_dir / "record.sqlite"
+    c = sqlite3.connect(path)
+    c.executescript(_v1_schema_sql())
+    c.execute("INSERT INTO documents(doc_id, subject_id, version_no, origin, content_hash, media_type, created_at) "
+              "VALUES ('d1', 's1', 1, 'source', 'h', 'text/plain', '2026-10-07T12:00:00+00:00')")
+    c.execute("INSERT INTO powers(role, power, granted_at) VALUES ('commander', 'forget', 'then')")
+    c.execute("PRAGMA user_version = 1")
+    c.commit()
+    assert c.execute("SELECT 1 FROM sqlite_master WHERE name = 'exclusions'").fetchone() is None
+    c.close()
+    r = Record(path)
+    try:
+        assert _user_version(path) == 2
+        names = {row[0] for row in r.conn.execute("SELECT name FROM sqlite_master WHERE name LIKE 'exclusions%'")}
+        assert names == {"exclusions", "exclusions_no_update", "exclusions_no_delete"}
+        evs = r.events(kind="schema_migrated")
+        assert len(evs) == 1 and evs[0].payload == {"from": 1, "to": 2}
+        assert "exclude" in r.powers_for("commander") and "exclude" not in r.powers_for("writer")
+        assert r.document("d1").subject_id == "s1"  # what was there is still there
+        r.add_exclusion(doc_id="d1", reason="corrupt scan", ordered_by="commander", created_at=T0)
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            r.conn.execute("UPDATE exclusions SET reason = 'other'")
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            r.conn.execute("DELETE FROM exclusions")
+    finally:
+        r.close()
+
+
+def test_migration_step_2_builds_the_table_and_triggers_on_its_own():
+    """On a real open SCHEMA creates the table first; this proves the step alone is sufficient and idempotent."""
+    from obiwan.record.schema import MIGRATIONS
+    c = sqlite3.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE documents (doc_id TEXT PRIMARY KEY)")
+        for _ in range(2):
+            for stmt in MIGRATIONS[2]:
+                c.execute(stmt)
+        c.execute("INSERT INTO documents VALUES ('d1')")
+        c.execute("INSERT INTO exclusions(doc_id, reason, ordered_by, created_at) VALUES ('d1', 'r', 'commander', 't')")
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            c.execute("UPDATE exclusions SET reason = 'x'")
+    finally:
+        c.close()
+
+
+def test_exclusion_round_trip_is_one_per_document(record):
+    d = _source_doc(record)
+    assert record.exclusion_for(d.doc_id) is None
+    e = record.add_exclusion(doc_id=d.doc_id, reason="unreadable scan", ordered_by="commander", created_at=T0)
+    got = record.exclusion_for(d.doc_id)
+    assert got == e and (got.doc_id, got.reason, got.ordered_by) == (d.doc_id, "unreadable scan", "commander")
+    with pytest.raises(sqlite3.IntegrityError):
+        record.add_exclusion(doc_id=d.doc_id, reason="again", ordered_by="commander", created_at=T0)
+    with pytest.raises(sqlite3.IntegrityError):
+        record.add_exclusion(doc_id="no-such-doc", reason="r", ordered_by="commander", created_at=T0)
+
+
+def _failed(record, kind, target):
+    record.conn.execute("INSERT INTO work(kind, target, state, attempts, next_attempt_at, created_at, updated_at) "
+                        "VALUES (?, ?, 'failed', 5, 't', 't', 't')", (kind, target))
+
+
+def test_an_excluded_latest_version_is_neither_failed_nor_blocking(record):
+    good = _source_doc(record, "f1", "h1")
+    record.add_chunks(good.doc_id, [ChunkSpec(0, 0, 1, "a")])
+    record.conn.execute("INSERT INTO projection(chunk_id, kind, state) VALUES (?, 'fts', 'current')", (f"{good.doc_id}-0",))
+    bad = _source_doc(record, "f2", "h2")
+    _failed(record, "extract", bad.doc_id)
+    cov = record.coverage_counts()
+    assert (cov["documents"], cov["documents_indexed"], cov["documents_failed"], cov["documents_excluded"]) == (2, 1, 1, 0)
+    assert record.failed_work_blocking() == 1
+    record.add_exclusion(doc_id=bad.doc_id, reason="r", ordered_by="commander", created_at=T0)
+    cov = record.coverage_counts()
+    assert (cov["documents"], cov["documents_indexed"], cov["documents_failed"], cov["documents_excluded"]) == (2, 1, 0, 1)
+    assert record.failed_work_blocking() == 0
+    newer = _source_doc(record, "f2", "h3")  # a changed file is a new version, tried fresh: not excluded
+    cov = record.coverage_counts()
+    assert (cov["documents"], cov["documents_failed"], cov["documents_excluded"]) == (2, 0, 0)
+    _failed(record, "extract", newer.doc_id)
+    assert record.coverage_counts()["documents_failed"] == 1 and record.failed_work_blocking() == 1
+
+
+@pytest.mark.parametrize("kind", ["extract", "index"])
+def test_failed_work_on_a_superseded_or_forgotten_version_does_not_block(record, kind):
+    old = _source_doc(record, "f1", "h1")
+    _failed(record, kind, old.doc_id)
+    assert record.failed_work_blocking() == 1
+    _source_doc(record, "f1", "h2")
+    assert record.failed_work_blocking() == 0  # superseded
+    gone = _source_doc(record, "f2", "h3")
+    _failed(record, kind, gone.doc_id)
+    assert record.failed_work_blocking() == 1
+    record.add_tombstone(subject_id="f2", reason="r", ordered_by="commander", created_at=T0)
+    assert record.failed_work_blocking() == 0  # forgotten
+
+
+def test_an_excluded_document_with_chunks_cannot_make_an_unindexed_one_look_complete(record):
+    excluded = _source_doc(record, "f1", "h1")
+    record.add_chunks(excluded.doc_id, [ChunkSpec(0, 0, 1, "a")])
+    record.conn.execute("INSERT INTO projection(chunk_id, kind, state) VALUES (?, 'fts', 'current')", (f"{excluded.doc_id}-0",))
+    other = _source_doc(record, "f2", "h2")
+    record.add_chunks(other.doc_id, [ChunkSpec(0, 0, 1, "b")])  # chunked but never indexed
+    record.add_exclusion(doc_id=excluded.doc_id, reason="r", ordered_by="commander", created_at=T0)
+    cov = record.coverage_counts()
+    assert cov["documents"] - cov["documents_excluded"] == 1
+    assert cov["documents_indexed"] == 0 and cov["chunks"] == 1 and cov["chunks_indexed"] == 0
+
+
+def test_a_failed_extract_on_a_document_that_has_chunks_does_not_block(record):
+    d = _source_doc(record, "f1", "h1")
+    _failed(record, "extract", d.doc_id)
+    assert record.failed_work_blocking() == 1
+    record.add_chunks(d.doc_id, [ChunkSpec(0, 0, 1, "a")])
+    assert record.failed_work_blocking() == 0
+    _failed(record, "index", d.doc_id)
+    assert record.failed_work_blocking() == 1

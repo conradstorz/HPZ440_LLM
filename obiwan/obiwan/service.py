@@ -3,6 +3,7 @@ reads them from a caller. Every response that returns knowledge also returns cov
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -100,24 +101,62 @@ class Service:
         self.projection.retire_subject(subject_id, reason="forgotten", now=now)
         return {"subject_id": subject_id, "tombstone": tomb.model_dump(mode="json")}
 
+    def exclude(self, *, subject_id: str, reason: str, role: str) -> dict:
+        """Take the latest version of a subject out of coverage because its extraction failed for good. Only that version:
+        a changed file is a new version and is tried fresh. The failed work row stays, raw, in /status."""
+        if not (reason or "").strip():
+            raise ValueError("reason is required to exclude")
+        now = self._now()
+        with self.record.transaction():  # checks and insert under one write lock: a concurrent exclude cannot slip between them
+            latest = self._live_latest(subject_id)
+            if self.record.exclusion_for(latest.doc_id) is not None:
+                raise ValueError(f"version {latest.doc_id} is already excluded")
+            n = len(self.record.chunks_for(latest.doc_id))
+            if n:
+                raise ValueError(f"version {latest.doc_id} has {n} chunks; only a version with no chunks and a failed extract can be excluded")
+            item = self.work.item_for("extract", latest.doc_id)
+            state = item.state if item else None
+            if item is None or state != "failed":
+                raise ValueError(f"version {latest.doc_id} cannot be excluded: its extract work is {state!r}, not 'failed'")
+            try:
+                exc = self.record.add_exclusion(doc_id=latest.doc_id, reason=reason, ordered_by=role, created_at=now)
+            except sqlite3.IntegrityError as e:
+                raise ValueError(f"version {latest.doc_id} is already excluded") from e
+            self.record.add_event("exclusion", role=role, payload={"subject_id": subject_id, "doc_id": latest.doc_id, "reason": reason,
+                                                                   "last_error": item.last_error})
+        return {"subject_id": subject_id, "exclusion": exc.model_dump(mode="json")}
+
     def scan(self, *, role: str) -> dict:
         scan_id, started = new_id(), self._now()
         roots = scan_roots(self.settings.roots, record=self.record, work=self.work, scan_id=scan_id, now=started,
                            max_file_bytes=self.settings.max_file_bytes)
         inbox = process_inbox(self.inbox, record=self.record, projection=self.projection, settings=self.settings, scan_id=scan_id, now=started)
+        with self.record.transaction():
+            repairs = sum(self.work.requeue("index", doc_id, now=started) for doc_id in self.record.documents_needing_index())
         work = drain(record=self.record, work=self.work, projection=self.projection, roots=self.roots, settings=self.settings, now=started)
         finished = self._now()
         report = {"scan_id": scan_id, "started_at": started.isoformat(), "finished_at": finished.isoformat(),
-                  "roots": [r.model_dump() for r in roots], "inbox": inbox.model_dump(), "work": work.model_dump()}
+                  "roots": [r.model_dump() for r in roots], "inbox": inbox.model_dump(), "work": work.model_dump(),
+                  "repairs_enqueued": repairs}
         self.record.add_scan(scan_id=scan_id, started_at=started, finished_at=finished, report=report)
         self.record.add_event("scan", role=role, payload={"scan_id": scan_id, "roots": [(r.name, r.reachable, r.seen) for r in roots],
-                                                          "inbox": (inbox.recorded, inbox.failed), "work": work.model_dump()})
+                                                          "inbox": (inbox.recorded, inbox.failed), "work": work.model_dump(),
+                                                          "repairs_enqueued": repairs})
         return report
 
     def reindex(self, *, role: str) -> dict:
         n = self.projection.rebuild(now=self._now())
-        self.record.add_event("reindex", role=role, payload={"chunks_indexed": n})
-        return {"chunks_indexed": n, "projection": self.projection.state_counts()}
+        needing = set(self.record.documents_needing_index())
+        settled = []
+        for doc_id in self.work.failed_index_targets():
+            doc = self.record.document(doc_id)
+            latest = self.record.latest_document(doc.subject_id) if doc else None
+            if latest and latest.doc_id == doc_id and self.record.tombstone_for(doc.subject_id) is None and doc_id not in needing:
+                settled.append(doc_id)
+        cleared = self.work.clear_failed_index(settled, now=self._now())
+        self.record.add_event("reindex", role=role, payload={"chunks_indexed": n, "index_failures_cleared": cleared,
+                                                             "index_failures_cleared_doc_ids": sorted(settled)})
+        return {"chunks_indexed": n, "projection": self.projection.state_counts(), "index_failures_cleared": cleared}
 
     # ----- reads -----
 
@@ -155,8 +194,10 @@ class Service:
             r = reported.get(name)
             roots.append({"name": name, "path": str(path), "reachable": bool(r and r["reachable"]),
                           "last_scan_at": last["finished_at"] if r else None})
-        complete = (counts["documents"] == counts["documents_indexed"] and wq["pending"] == 0 and wq["failed"] == 0
-                    and all(r["reachable"] for r in roots))
+        # An excluded version never has chunks, so it is never among documents_indexed. Failed work on a superseded,
+        # forgotten or excluded version does not block; work_failed stays the raw count and /status lists every row.
+        complete = (counts["documents"] - counts["documents_excluded"] == counts["documents_indexed"] and wq["pending"] == 0
+                    and self.record.failed_work_blocking() == 0 and all(r["reachable"] for r in roots))
         return {**counts, "work_pending": wq["pending"], "work_failed": wq["failed"], "roots": roots,
                 "last_scan_at": last["finished_at"] if last else None, "complete": complete}
 
