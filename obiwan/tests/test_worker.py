@@ -113,3 +113,17 @@ def test_an_index_item_for_a_document_without_chunks_is_an_error(world, settings
     from obiwan.worker import process_item
     with pytest.raises(RuntimeError, match="no chunks"):
         process_item(item, record=r, projection=p, roots={}, settings=settings, now=T0)
+
+
+def test_a_forgotten_subject_is_never_made_searchable_by_an_index_item(world, settings, corpus):
+    r, w, p = world
+    drain(record=r, work=w, projection=p, roots={"corpus": corpus}, settings=settings, now=T0)
+    doc = r.document(r.chunk(p.search("serengeti", k=1)[0].chunk_id).doc_id)
+    ids = [c.chunk_id for c in r.chunks_for(doc.doc_id)]
+    w.requeue("index", doc.doc_id, now=T0 + timedelta(minutes=1))
+    r.add_tombstone(subject_id=doc.subject_id, reason="mistaken", ordered_by="commander", created_at=T0)
+    rep = drain(record=r, work=w, projection=p, roots={}, settings=settings, now=T0 + timedelta(minutes=1))
+    assert rep.completed == 1
+    assert p.search("serengeti", k=5) == []
+    states = {row[0]: (row[1], row[2]) for row in r.conn.execute("SELECT chunk_id, state, reason FROM projection WHERE kind = 'fts'")}
+    assert all(states[i] == ("stale", "forgotten") for i in ids)

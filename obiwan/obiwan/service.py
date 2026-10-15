@@ -105,7 +105,8 @@ class Service:
         roots = scan_roots(self.settings.roots, record=self.record, work=self.work, scan_id=scan_id, now=started,
                            max_file_bytes=self.settings.max_file_bytes)
         inbox = process_inbox(self.inbox, record=self.record, projection=self.projection, settings=self.settings, scan_id=scan_id, now=started)
-        repairs = sum(self.work.requeue("index", doc_id, now=started) for doc_id in self.record.documents_needing_index())
+        with self.record.transaction():
+            repairs = sum(self.work.requeue("index", doc_id, now=started) for doc_id in self.record.documents_needing_index())
         work = drain(record=self.record, work=self.work, projection=self.projection, roots=self.roots, settings=self.settings, now=started)
         finished = self._now()
         report = {"scan_id": scan_id, "started_at": started.isoformat(), "finished_at": finished.isoformat(),
@@ -119,8 +120,16 @@ class Service:
 
     def reindex(self, *, role: str) -> dict:
         n = self.projection.rebuild(now=self._now())
-        self.record.add_event("reindex", role=role, payload={"chunks_indexed": n})
-        return {"chunks_indexed": n, "projection": self.projection.state_counts()}
+        needing = set(self.record.documents_needing_index())
+        settled = []
+        for doc_id in self.work.failed_index_targets():
+            doc = self.record.document(doc_id)
+            latest = self.record.latest_document(doc.subject_id) if doc else None
+            if latest and latest.doc_id == doc_id and self.record.tombstone_for(doc.subject_id) is None and doc_id not in needing:
+                settled.append(doc_id)
+        cleared = self.work.clear_failed_index(settled, now=self._now())
+        self.record.add_event("reindex", role=role, payload={"chunks_indexed": n, "index_failures_cleared": cleared})
+        return {"chunks_indexed": n, "projection": self.projection.state_counts(), "index_failures_cleared": cleared}
 
     # ----- reads -----
 

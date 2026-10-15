@@ -220,5 +220,34 @@ def test_scan_repairs_one_documents_projection_without_touching_others_or_source
         assert [r[2] for r in built(victim.doc_id)] == ["current"] * len(built(victim.doc_id))
         assert svc.record.documents_needing_index() == []
         assert {d.doc_id: [tuple(r) for r in built(d.doc_id)] for d in others} == before_others
-    assert svc.search("serengeti zebras", k=5)["results"]
+    victim_ids = {c.chunk_id for c in svc.record.chunks_for(victim.doc_id)}
+    in_fts = {r[0] for r in svc.projection._conn.execute("SELECT chunk_id FROM chunks_fts")}
+    assert victim_ids <= in_fts
+    word = svc.record.chunks_for(victim.doc_id)[0].text.split()[0]
+    assert victim_ids & {r["chunk_id"] for r in svc.search(word, k=25)["results"]}
     assert svc.scan(role="writer")["repairs_enqueued"] == 0
+
+
+def test_a_terminal_index_failure_stays_visible_until_reindex_settles_it(svc):
+    svc.scan(role="writer")
+    victim = svc.record.latest_documents()[0]
+    ids = [c.chunk_id for c in svc.record.chunks_for(victim.doc_id)]
+    with svc.record.transaction():
+        svc.record.conn.executemany("UPDATE projection SET state = 'stale', reason = 'test', built_at = NULL WHERE chunk_id = ? AND kind = 'fts'",
+                                    [(i,) for i in ids])
+    svc.projection._remove(ids)
+    svc.projection._conn.commit()
+    svc.work.requeue("index", victim.doc_id, now=T0)
+    item = svc.work.claim(now=T0, lease_seconds=60)
+    assert svc.work.fail(item.id, "RuntimeError: boom", now=T0, max_attempts=1) is True
+    rep = svc.scan(role="writer")
+    assert rep["repairs_enqueued"] == 0  # a failed row is not revived by the sweep
+    failed = svc.work.failed()
+    assert [(w.kind, w.last_error) for w in failed] == [("index", "RuntimeError: boom")]
+    cov = svc.coverage()
+    assert cov["documents_failed"] == 1 and cov["complete"] is False
+    out = svc.reindex(role="writer")
+    assert out["index_failures_cleared"] == 1
+    assert svc.record.events(limit=1)[0].payload["index_failures_cleared"] == 1
+    cov = svc.coverage()
+    assert cov["documents_failed"] == 0 and cov["complete"] is True
