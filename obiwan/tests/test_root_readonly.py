@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 from pathlib import Path
 
 from obiwan.core.config import Settings
 from obiwan.runtime import build_service
+from tests.conftest import T0
 
 FORBIDDEN_SUFFIXES = (".error.json", "-wal", "-shm", ".sqlite")
 
@@ -36,15 +38,25 @@ def test_full_cycle_never_writes_a_source_root(tmp_path):
     settings = Settings(_env_file=None, data_dir=data, inbox_dir=inbox, source_roots=f"corpus={root}",
                         reader_token="r", writer_token="w", commander_token="c", chunk_chars=200)
     svc = build_service(settings)
+    clock = [T0]
+    svc._now = lambda: clock[0]
     try:
         before = _snapshot(root)
 
         rep1 = svc.scan(role="writer")
         assert rep1["roots"][0]["reachable"] and rep1["roots"][0]["new"] == 4  # three good files plus the corrupt pdf; the png is skipped
+        assert rep1["work"]["postponed"] + rep1["work"]["failed"] >= 1  # the root's corrupt pdf really failed extraction
+        assert any(e.startswith("ExtractionError") for e in rep1["work"]["errors"])
+        hit = svc.search("serengeti", 5)["results"]
+        assert hit and hit[0]["location"].startswith("corpus:")  # root files were extracted and indexed
         (inbox / "memo.md").write_text("# Memo\n\nThe inbox memo mentions zebras.\n", encoding="utf-8", newline="\n")
         (inbox / "bad.pdf").write_bytes(b"%PDF-1.4 not really a pdf")
         rep2 = svc.scan(role="writer")
         assert rep2["inbox"]["recorded"] == 1 and rep2["inbox"]["failed"] == 1
+        assert (inbox / "failed" / "bad.pdf.error.json").is_file()  # the error file lands in the inbox, not the root
+        clock[0] = T0 + timedelta(days=30)  # past next_attempt_at, so the retry re-reads the failed root file
+        rep3 = svc.scan(role="writer")
+        assert rep3["work"]["postponed"] + rep3["work"]["failed"] >= 1
         svc.reindex(role="writer")
         assert svc.search("zebra", 5)["results"]
 
