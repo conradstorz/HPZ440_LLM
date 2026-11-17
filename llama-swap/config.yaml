@@ -1,7 +1,7 @@
 # llama-swap config for the `llm-api` service (see compose.yaml, docs/models.md).
 #
 # llama-swap listens on 8080 and starts/stops one llama-server per request, chosen by the request's
-# `model` field. An unknown `model` is rejected (HTTP 400); llama.cpp used to ignore it.
+# `model` field. An unknown `model` is rejected (HTTP 404); llama.cpp used to ignore it.
 # Paths are CONTAINER paths: HOST_MODEL_DIR is mounted read-only at /models.
 #
 # VRAM is 12 GB. Every entry below is in the same swap group (see `groups`), so only one is loaded
