@@ -62,13 +62,13 @@ What it cannot do: send, forward, label, archive, or delete mail; reach the inte
 gate refuses those actions in code, not by prompt, and the reply says so plainly if you ask.
 
 `JARVIS_CONTEXT_TOKENS` is the context the agent budgets for (system prompt, transcript, tool results and tool
-schemas, leaving room for the reply); `compose.yaml` feeds it and llama.cpp's `--ctx-size` from the same
-`LLM_CONTEXT_SIZE`, so raising one raises both. A turn also stops after 90 seconds or six tool steps and answers
+schemas, leaving room for the reply); `compose.yaml` feeds it from `LLM_CONTEXT_SIZE`, and `llama-swap/config.yaml` hard-codes
+the server's `--ctx-size` (macro `ctx`); the two must be equal (a test checks), so raise both together. A turn also stops after 90 seconds or six tool steps and answers
 with what it has.
 
 Two operator settings in Open WebUI matter:
 
-- Set the **Task Model** (Admin → Settings → Interface) to the raw llama.cpp model. Left on `jarvis`, every chat
+- Set the **Task Model** (Admin → Settings → Interface) to the raw llama.cpp model `/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf`, unless you chat with vision models: llama-swap holds one model at a time, so a Qwen task model makes every vision chat swap Qwen in and out for each title/tag call. In that case leave the external task model blank (the chat's own model is used). Left on `jarvis`, every chat
   title and tag generation costs a second model call on the same GPU; Jarvis recognises those prompts and answers
   them without tools, but the raw model does the job faster and keeps them out of the chat journal entirely.
 - On an existing Open WebUI volume the persisted connection list wins over `OPENAI_API_BASE_URLS`. If `jarvis` is
