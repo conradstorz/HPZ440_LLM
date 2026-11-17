@@ -2,6 +2,7 @@
 param(
     [string]$Repo = 'bartowski/Qwen2.5-7B-Instruct-GGUF',
     [string]$File = 'Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+    [string]$Subdir,
     [string]$Context
 )
 
@@ -22,11 +23,14 @@ $HostModelDir = '/srv/llm/models'
 $DirMatch = Select-String -Path $EnvPath -Pattern '^HOST_MODEL_DIR=(.+)$'
 if ($DirMatch) { $HostModelDir = $DirMatch.Matches.Groups[1].Value }
 
-$ContainerScript = "if [ -f /models/$File ]; then echo 'Already present: /models/$File'; exit 0; fi; pip install --quiet 'huggingface_hub>=0.34,<2' && hf download $Repo $File --local-dir /models"
+if ($Subdir -and $Subdir -notmatch '^[A-Za-z0-9._-]+$') { throw 'Subdir must be a single directory name such as minicpm-v-2_6 (no slashes). Use it when two repos ship the same filename, e.g. mmproj-model-f16.gguf.' }
+$Dest = if ($Subdir) { "/models/$Subdir" } else { '/models' }
+
+$ContainerScript = "if [ -f $Dest/$File ]; then echo 'Already present: $Dest/$File'; exit 0; fi; pip install --quiet 'huggingface_hub>=0.34,<2' && hf download $Repo $File --local-dir $Dest"
 
 Write-Host "Downloading $Repo/$File into $HostModelDir on context '$Context'..."
 docker --context $Context run --rm -v "${HostModelDir}:/models" python:3.12-slim sh -c $ContainerScript
 if ($LASTEXITCODE -ne 0) { throw "Download of $Repo/$File failed on context '$Context'. Gated repositories must be downloaded manually on the host with an authenticated 'hf' CLI and copied into $HostModelDir." }
 
-Write-Host "Model available at $HostModelDir/$File on the host."
-Write-Host "Next: pwsh -NoProfile -File scripts/switch-model.ps1 -ModelPath /models/$File"
+Write-Host "Model available at $HostModelDir$($Dest.Substring(7))/$File on the host."
+Write-Host "Next: reference $Dest/$File in llama-swap/config.yaml. Only a model that config answers to can be given to scripts/switch-model.ps1 -ModelPath (what Jarvis asks for)."

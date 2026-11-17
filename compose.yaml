@@ -1,6 +1,7 @@
 services:
   llm-api:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    # llama-swap starts one llama-server per request, chosen by the request's `model`; see llama-swap/config.yaml.
+    image: ghcr.io/mostlygeek/llama-swap:unified-cuda13
     restart: unless-stopped
     ports:
       - "${LLM_HOST_PORT:-8080}:8080"
@@ -9,19 +10,19 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    command:
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8080"
-      - --model
-      - "${LLM_MODEL_PATH:-/models/model.gguf}"
-      - --ctx-size
-      - "${LLM_CONTEXT_SIZE:-4096}"
-      - --parallel
-      - "${LLM_PARALLEL:-1}"
-      - --n-gpu-layers
-      - "${LLM_GPU_LAYERS:-999}"
+    # A `configs` entry, not a bind mount: with the remote docker context a relative bind path would be
+    # resolved on the HPZ440, where the repo does not exist. Compose uploads the file at create time and
+    # recreates the container when it changes. The image has no HEALTHCHECK, hence the explicit one; it ships curl.
+    # /health answers once llama-swap is up and loads no model.
+    configs:
+      - source: llama_swap_config
+        target: /etc/llama-swap/config/config.yaml
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     deploy:
       resources:
         reservations:
@@ -61,7 +62,8 @@ services:
     environment:
       - JARVIS_DATA_DIR=/data
       - JARVIS_LLM_BASE_URL=http://llm-api:8080
-      - JARVIS_LLM_MODEL=${LLM_MODEL_PATH:-/models/model.gguf}
+      # Must be an id or alias in llama-swap/config.yaml; llama-swap rejects unknown models.
+      - JARVIS_LLM_MODEL=${LLM_MODEL_PATH:-/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf}
       - JARVIS_GMAIL_ACCOUNT=${JARVIS_GMAIL_ACCOUNT:-}
       # Bounded by default: `in:inbox` alone matches tens of thousands of messages, and a run capped at
       # JARVIS_MAX_MESSAGES_PER_RUN would never reach the rest. See the note in .env.example.
@@ -70,7 +72,8 @@ services:
       - JARVIS_WORKSPACE_AGENT_URL=${JARVIS_WORKSPACE_AGENT_URL:-}
       - JARVIS_MAX_DOCUMENT_BYTES=${JARVIS_MAX_DOCUMENT_BYTES:-5000000}
       - JARVIS_MAX_PDF_PAGES=${JARVIS_MAX_PDF_PAGES:-20}
-      # Same source as llama.cpp's --ctx-size above, so the agent's context budget cannot exceed the server's.
+      # Must equal the `ctx` macro in llama-swap/config.yaml (tests/assert-project-shape.ps1 checks), so the agent's
+      # context budget cannot exceed the server's.
       - JARVIS_CONTEXT_TOKENS=${LLM_CONTEXT_SIZE:-4096}
       # Obi-Wan: reader and writer credentials only. The commander credential is deliberately absent (D4, S7).
       - JARVIS_OBIWAN_URL=http://obiwan:8070
@@ -110,6 +113,10 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+configs:
+  llama_swap_config:
+    file: ./llama-swap/config.yaml
 
 volumes:
   open-webui-data:

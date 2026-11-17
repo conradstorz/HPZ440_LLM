@@ -15,7 +15,6 @@ Assert-FileContains '.gitignore' '\*\.gguf$'
 Assert-FileContains '.gitignore' '^benchmarks/$'
 Assert-FileContains '.env.example' '^DOCKER_CONTEXT=hpz440$'
 Assert-FileContains '.env.example' '^LLM_CONTEXT_SIZE=8192$'
-Assert-FileContains '.env.example' '^LLM_GPU_LAYERS=999$'
 Assert-FileContains '.env.example' '^LLM_HOST_PORT=8080$'
 Assert-FileContains '.env.example' '^WEBUI_HOST_PORT=3000$'
 Assert-FileContains 'compose.yaml' 'llm-api:'
@@ -23,8 +22,11 @@ Assert-FileContains 'compose.yaml' 'open-webui:'
 Assert-FileContains 'compose.yaml' '\$\{LLM_HOST_PORT:-8080\}:8080'
 Assert-FileContains 'compose.yaml' '\$\{WEBUI_HOST_PORT:-3000\}:8080'
 Assert-FileContains 'compose.yaml' 'NVIDIA_VISIBLE_DEVICES=all'
-Assert-FileContains 'compose.yaml' '--model'
-Assert-FileContains 'compose.yaml' '\$\{LLM_MODEL_PATH:-/models/model\.gguf\}'
+Assert-FileContains 'compose.yaml' 'ghcr\.io/mostlygeek/llama-swap:'
+Assert-FileContains 'compose.yaml' 'file: \./llama-swap/config\.yaml'
+Assert-FileContains 'compose.yaml' 'target: /etc/llama-swap/config/config\.yaml'
+Assert-FileContains 'compose.yaml' '\$\{LLM_MODEL_PATH:-/models/Qwen2\.5-7B-Instruct-Q4_K_M\.gguf\}'
+Assert-FileContains '.env.example' '^LLM_MODEL_PATH=/models/Qwen2\.5-7B-Instruct-Q4_K_M\.gguf$'
 Assert-FileContains 'README.md' 'OpenAI-compatible API'
 Assert-FileContains 'README.md' 'scripts/start\.ps1'
 Assert-FileContains 'README.md' 'Open WebUI'
@@ -75,8 +77,18 @@ Assert-FileContains 'README.md' 'scripts/jarvis-agent-token\.ps1'
 Assert-FileContains 'compose.yaml' 'JARVIS_CONTEXT_TOKENS=\$\{LLM_CONTEXT_SIZE:-4096\}'
 Assert-FileContains 'compose.yaml' 'ENABLE_FORWARD_USER_INFO_HEADERS=true'
 
-Assert-FileContains 'compose.yaml' '\$\{LLM_PARALLEL:-1\}'
-Assert-FileContains '.env.example' '^LLM_PARALLEL=1$'
+# llama-swap: the server context is hard-coded in the config and must equal LLM_CONTEXT_SIZE (Jarvis's budget).
+$EnvCtx = [regex]::Match((Get-Content -Raw (Join-Path $Root '.env.example')), '(?m)^LLM_CONTEXT_SIZE=(\d+)\s*$').Groups[1].Value
+$SwapCfg = Get-Content -Raw (Join-Path $Root 'llama-swap/config.yaml')
+$SwapCtx = [regex]::Match($SwapCfg, '(?m)^  ctx:\s*(\d+)\s*$').Groups[1].Value
+if (-not $EnvCtx -or $EnvCtx -ne $SwapCtx) { throw "llama-swap/config.yaml macro ctx ($SwapCtx) must equal .env.example LLM_CONTEXT_SIZE ($EnvCtx)" }
+if ($SwapCfg -notmatch '--ctx-size \$\{ctx\}') { throw 'llama-swap/config.yaml must pass --ctx-size ${ctx}' }
+foreach ($Id in '/models/Qwen2\.5-7B-Instruct-Q4_K_M\.gguf', 'qwen2\.5-vl-7b', 'gemma3-4b', 'gemma3-12b', 'minicpm-v-2\.6', 'qwen2-vl-7b') {
+    Assert-FileContains 'llama-swap/config.yaml' ('^  "' + $Id + '":')
+}
+if ((Select-String -InputObject $SwapCfg -Pattern '--mmproj' -AllMatches).Matches.Count -ne 5) { throw 'llama-swap/config.yaml: each of the five vision models needs --mmproj' }
+Assert-FileContains 'llama-swap/config.yaml' 'ttl: 0'
+Assert-FileContains 'compose.yaml' 'healthcheck:'
 
 Assert-FileContains 'README.md' 'scripts/stress-test\.ps1'
 Assert-FileContains 'docs/operations.md' 'scripts/stress-test\.ps1'

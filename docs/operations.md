@@ -10,9 +10,9 @@ Run `pwsh -NoProfile -File scripts/check-gpu.ps1` to confirm the GPU is visible 
 
 ## Fetch a Model
 
-Run `pwsh -NoProfile -File scripts/fetch-model.ps1` to download the default Qwen2.5-7B-Instruct Q4_K_M GGUF into `HOST_MODEL_DIR` on the host. Use `-Repo` and `-File` for a different single-file GGUF. See `docs/models.md`.
+Run `pwsh -NoProfile -File scripts/fetch-model.ps1` to download the default Qwen2.5-7B-Instruct Q4_K_M GGUF into `HOST_MODEL_DIR` on the host. Use `-Repo` and `-File` for a different single-file GGUF (`-Subdir` for a subdirectory); a vision model needs a second call for its `mmproj` file. See `docs/models.md`.
 
-Then run `pwsh -NoProfile -File scripts/switch-model.ps1 -ModelPath /models/<file>.gguf` to point `.env` at it.
+Then add the model to `llama-swap/config.yaml` and restart `llm-api` (`docker --context hpz440 compose restart llm-api`; llama-swap reads the config at startup).
 
 ## WebUI Secret
 
@@ -46,13 +46,15 @@ Adjust the ports if `.env` changes `LLM_HOST_PORT` or `WEBUI_HOST_PORT`. LAN cli
 
 ## Health
 
-Run `pwsh -NoProfile -File scripts/health.ps1` to check `/v1/models` and Open WebUI.
+Run `pwsh -NoProfile -File scripts/health.ps1` to check `/v1/models` (llama-swap lists every configured model, loaded or not) and Open WebUI. Neither this nor the `llm-api` container healthcheck loads a model.
 
 ## Switch Models
 
-Run `pwsh -NoProfile -File scripts/switch-model.ps1 -ModelPath /models/name.gguf`.
+`llm-api` is llama-swap: every model in `llama-swap/config.yaml` is available on demand, selected by the request's `model` field, one loaded at a time. There is nothing to switch for ad-hoc use.
 
-Restart the stack after switching models.
+`pwsh -NoProfile -File scripts/switch-model.ps1 -ModelPath <id>` only changes which model id Jarvis and `benchmark.ps1` request (`LLM_MODEL_PATH`); `<id>` must be an id or alias in the config. Re-run `scripts/start.ps1` afterwards so Jarvis picks it up.
+
+Model TTLs: the Qwen2.5-7B entry never unloads (Jarvis's scheduled runs need it); vision models unload after 300 s idle. Chatting with a vision model in Open WebUI evicts Qwen, and the next Jarvis request reloads it. If Open WebUI's Task Model (title/tag generation) is pinned to the Qwen model, every vision chat will swap Qwen in and out; see `docs/jarvis.md`.
 
 ## Benchmark
 
@@ -62,8 +64,10 @@ Benchmark JSON is written under `benchmarks/`, which is ignored by git. It inclu
 
 ### Concurrency sweep
 
-`pwsh -NoProfile -File scripts/stress-test.ps1` measures aggregate throughput at 1, 2, 4, and
-8 llama.cpp slots, holding 2048 tokens of context per slot. It rewrites `LLM_PARALLEL` and
+`pwsh -NoProfile -File scripts/stress-test.ps1` is **disabled** since `llm-api` became llama-swap: the config
+hard-codes `--parallel 1` and `--ctx-size 8192`, so `.env` no longer controls slots. The rest of this section
+describes the original procedure, kept for the rework. The script measured aggregate throughput at 1, 2, 4, and
+8 llama.cpp slots, holding 2048 tokens of context per slot. It rewrote `LLM_PARALLEL` and
 `LLM_CONTEXT_SIZE` in `.env`, restarts `llm-api` once per slot count, and restores `.env`
 byte-for-byte in a `finally` block. Jarvis shares `LLM_CONTEXT_SIZE`, so Jarvis is
 unavailable for the few minutes the sweep runs. Unlike the other scripts it talks to

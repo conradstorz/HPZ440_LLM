@@ -8,6 +8,13 @@ Ctrl+C -- LLM_CONTEXT_SIZE also feeds JARVIS_CONTEXT_TOKENS, so leaving it
 raised would silently change Jarvis's budget.
 
 Jarvis is unavailable while this runs. The sweep takes several minutes.
+
+DISABLED since llm-api became llama-swap: the sweep varies LLM_PARALLEL and LLM_CONTEXT_SIZE through
+.env, but llama-swap/config.yaml hard-codes `--parallel 1` and `--ctx-size 8192` per model, so those
+keys no longer reach llama-server. To sweep again, temporarily edit `${common}` in that config (or add
+a sweep-only model entry), restart llm-api, and run `uv --directory bench run python -m bench.load`
+by hand against http://hpz440:8080 with --model set to a config id. The body below is kept for
+that rework and still shows the intended procedure (LLM_PARALLEL).
 #>
 [CmdletBinding()]
 param(
@@ -20,6 +27,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+throw 'stress-test.ps1 is disabled: llama-swap/config.yaml fixes --parallel and --ctx-size, so .env no longer controls them. See the header of this script.'
 # docker/compose failures must surface through $LASTEXITCODE, not a thrown
 # terminating error, or the oom/unhealthy/error branches below never run.
 $PSNativeCommandUseErrorActionPreference = $false

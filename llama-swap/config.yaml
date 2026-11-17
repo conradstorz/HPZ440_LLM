@@ -1,0 +1,84 @@
+# llama-swap config for the `llm-api` service (see compose.yaml, docs/models.md).
+#
+# llama-swap listens on 8080 and starts/stops one llama-server per request, chosen by the request's
+# `model` field. An unknown `model` is rejected (HTTP 400); llama.cpp used to ignore it.
+# Paths are CONTAINER paths: HOST_MODEL_DIR is mounted read-only at /models.
+#
+# VRAM is 12 GB. Every entry below is in the same swap group (see `groups`), so only one is loaded
+# at a time; a request for another model unloads the current one first (cold load ~5-30 s).
+
+healthCheckTimeout: 240   # seconds a model may take to load before the request fails
+
+macros:
+  # Context window per request. MUST equal LLM_CONTEXT_SIZE in .env.example (which feeds
+  # JARVIS_CONTEXT_TOKENS in compose.yaml); tests/assert-project-shape.ps1 enforces the tie.
+  # llama-swap does not see compose interpolation, so this is hard-coded here.
+  ctx: 8192
+  llama_server: /usr/local/bin/llama-server
+  common: >-
+    ${llama_server} --host 127.0.0.1 --port ${PORT}
+    --n-gpu-layers 999 --ctx-size ${ctx} --parallel 1 --jinja
+
+models:
+  # Jarvis (JARVIS_LLM_MODEL) and its scheduled runs request exactly this string. Never unloaded by TTL.
+  "/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf":
+    aliases: ["qwen2.5-7b"]
+    ttl: 0
+    cmd: >-
+      ${common}
+      --model /models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
+
+  # Vision models: each needs its GGUF plus its mmproj file. Unloaded after 300 s idle.
+  "qwen2.5-vl-7b":
+    ttl: 300
+    cmd: >-
+      ${common}
+      --model /models/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf
+      --mmproj /models/mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf
+
+  "gemma3-4b":
+    ttl: 300
+    cmd: >-
+      ${common}
+      --model /models/gemma-3-4b-it-qat-Q4_0.gguf
+      --mmproj /models/mmproj-model-f16-4B.gguf
+
+  "gemma3-12b":
+    ttl: 300
+    cmd: >-
+      ${common}
+      --model /models/gemma-3-12b-it-qat-Q4_0.gguf
+      --mmproj /models/mmproj-model-f16-12B.gguf
+
+  # MiniCPM-V ships generic filenames, so it lives in its own subdirectory.
+  "minicpm-v-2.6":
+    ttl: 300
+    cmd: >-
+      ${common}
+      --model /models/minicpm-v-2_6/ggml-model-Q4_K_M.gguf
+      --mmproj /models/minicpm-v-2_6/mmproj-model-f16.gguf
+
+  "qwen2-vl-7b":
+    ttl: 300
+    cmd: >-
+      ${common}
+      --model /models/Qwen2-VL-7B-Instruct-Q4_K_M.gguf
+      --mmproj /models/mmproj-Qwen2-VL-7B-Instruct-Q8_0.gguf
+
+groups:
+  # Exclusive swapping: one model resident at a time.
+  gpu:
+    swap: true
+    exclusive: true
+    members:
+      - "/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+      - "qwen2.5-vl-7b"
+      - "gemma3-4b"
+      - "gemma3-12b"
+      - "minicpm-v-2.6"
+      - "qwen2-vl-7b"
+
+hooks:
+  on_startup:
+    preload:
+      - "/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"

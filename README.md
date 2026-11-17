@@ -4,7 +4,7 @@ Operations project for serving 7B-class GGUF models from the HPZ440 LAN server w
 
 ## What It Runs
 
-- `llama.cpp` server for an OpenAI-compatible API.
+- `llama-swap` in front of `llama.cpp` servers for an OpenAI-compatible API: Qwen2.5-7B-Instruct plus five vision models, loaded on demand (`llama-swap/config.yaml`, `docs/models.md`).
 - Open WebUI for browser chat.
 - PowerShell scripts for lifecycle, health checks, model switching, and small benchmarks.
 
@@ -15,7 +15,7 @@ Operations project for serving 7B-class GGUF models from the HPZ440 LAN server w
 3. Run `pwsh -NoProfile -File scripts/check-gpu.ps1`.
 4. Copy `.env.example` to `.env` and set `WEBUI_SECRET_KEY` to a random value.
 5. Run `pwsh -NoProfile -File scripts/fetch-model.ps1` to download the default model to the host.
-6. Run `pwsh -NoProfile -File scripts/switch-model.ps1 -ModelPath /models/Qwen2.5-7B-Instruct-Q4_K_M.gguf`.
+6. Optionally run `scripts/fetch-model.ps1` again for each vision model file listed in `docs/models.md`. (`scripts/switch-model.ps1` only sets the model id Jarvis requests.)
 7. Run `pwsh -NoProfile -File scripts/start.ps1`.
 8. Run `pwsh -NoProfile -File scripts/health.ps1`.
 9. Run `pwsh -NoProfile -File scripts/benchmark.ps1` and record the result in `docs/models.md`.
@@ -32,7 +32,7 @@ pwsh -NoProfile -File scripts/jarvis-reindex.ps1
 ```
 
 ```powershell
-pwsh -NoProfile -File scripts/stress-test.ps1   # concurrency sweep; rewrites and restores .env, Jarvis is down while it runs
+pwsh -NoProfile -File scripts/stress-test.ps1   # disabled under llama-swap (see docs/operations.md)
 ```
 
 See `docs/cost-model.md` for the concurrency sweep results and the hosted-vs-owned break-even comparison.
