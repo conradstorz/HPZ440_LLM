@@ -12,7 +12,7 @@ Run `pwsh -NoProfile -File scripts/check-gpu.ps1` to confirm the GPU is visible 
 
 Run `pwsh -NoProfile -File scripts/fetch-model.ps1` to download the default Qwen2.5-7B-Instruct Q4_K_M GGUF into `HOST_MODEL_DIR` on the host. Use `-Repo` and `-File` for a different single-file GGUF (`-Subdir` for a subdirectory); a vision model needs a second call for its `mmproj` file. See `docs/models.md`.
 
-Then add the model to `llama-swap/config.yaml` and restart `llm-api` (`docker --context hpz440 compose restart llm-api`; llama-swap reads the config at startup).
+Then add the model to `llama-swap/config.yaml` and re-run `scripts/start.ps1`: the config is baked into the `llm-api` image (a bind mount of a repo file would resolve on the remote host), so a change needs the rebuild.
 
 ## WebUI Secret
 

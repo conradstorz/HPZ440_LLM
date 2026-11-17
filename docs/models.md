@@ -24,9 +24,9 @@ Inside the container, models are mounted at `/models`. `llm-api` is [llama-swap]
 | `minicpm-v-2.6` | `minicpm-v-2_6/ggml-model-Q4_K_M.gguf` + `minicpm-v-2_6/mmproj-model-f16.gguf` | 4.7 + 1.0 GB | 300 s |
 | `qwen2-vl-7b` | `Qwen2-VL-7B-Instruct-Q4_K_M.gguf` + `mmproj-Qwen2-VL-7B-Instruct-Q8_0.gguf` | 4.7 + 0.72 GB | 300 s |
 
-Sources: `ggml-org/*-GGUF` repos, except MiniCPM-V (`openbmb/MiniCPM-V-2_6-gguf`, whose generic filenames collide with other repos, hence its subdirectory). All six share one exclusive swap group on the 12 GB card: a request for a different model unloads the loaded one first, so the first request after a switch pays a cold load. An unknown `model` is rejected (llama.cpp used to ignore the field). Vision requests use the OpenAI `image_url` content part with a base64 data URI.
+Sources: `ggml-org/*-GGUF` repos, except MiniCPM-V (`openbmb/MiniCPM-V-2_6-gguf`, whose generic filenames collide with other repos, hence its subdirectory). All six share one exclusive swap group on the 12 GB card: a request for a different model unloads the loaded one first, so the first request after a switch pays a cold load. An unknown `model` is rejected with HTTP 404 (llama.cpp used to ignore the field). Vision requests use the OpenAI `image_url` content part with a base64 data URI.
 
-llama.cpp-native endpoints (`/health`, `/props`, `/slots`, `/tokenize`, `/metrics`) carry no `model` field, so llama-swap cannot route them. Reach them as `/upstream/<model id>/props` (loads that model if needed).
+llama.cpp-native endpoints (`/health`, `/props`, `/slots`, `/tokenize`, `/metrics`) carry no `model` field, so llama-swap cannot route them. Reach them as `/upstream/<model id>/props` (loads that model if needed). Use the alias for Qwen (`/upstream/qwen2.5-7b/props`, verified); the slash-containing id did not route.
 
 Do not commit model files. The repository ignores `*.gguf`, `*.safetensors`, checkpoints, and generated model artifacts.
 

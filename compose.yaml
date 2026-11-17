@@ -1,7 +1,8 @@
 services:
   llm-api:
     # llama-swap starts one llama-server per request, chosen by the request's `model`; see llama-swap/config.yaml.
-    image: ghcr.io/mostlygeek/llama-swap:unified-cuda13
+    build: ./llama-swap
+    image: hpz440-llm-llm-api
     restart: unless-stopped
     ports:
       - "${LLM_HOST_PORT:-8080}:8080"
@@ -10,13 +11,10 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    # A `configs` entry, not a bind mount: with the remote docker context a relative bind path would be
-    # resolved on the HPZ440, where the repo does not exist. Compose uploads the file at create time and
-    # recreates the container when it changes. The image has no HEALTHCHECK, hence the explicit one; it ships curl.
-    # /health answers once llama-swap is up and loads no model.
-    configs:
-      - source: llama_swap_config
-        target: /etc/llama-swap/config/config.yaml
+    # The config is baked into the image (llama-swap/Dockerfile), not bind-mounted: with the remote docker
+    # context a repo path would be resolved on the HPZ440, where the repo does not exist, and compose `configs`
+    # files turn into the same bind mount. Editing the config therefore needs start.ps1 (rebuild + recreate).
+    # The upstream image has no HEALTHCHECK, hence this one; it ships curl. /health loads no model.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 15s
@@ -113,10 +111,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
-
-configs:
-  llama_swap_config:
-    file: ./llama-swap/config.yaml
 
 volumes:
   open-webui-data:
